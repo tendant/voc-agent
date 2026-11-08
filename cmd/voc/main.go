@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log/slog"
@@ -14,7 +15,10 @@ import (
 
 	"github.com/tendant/voc-agent/internal/agent"
 	"github.com/tendant/voc-agent/internal/llm"
+	"github.com/tendant/voc-agent/internal/reminders"
 	"github.com/tendant/voc-agent/internal/server"
+	"github.com/tendant/voc-agent/internal/store"
+	"github.com/tendant/voc-agent/internal/tools"
 	"github.com/tendant/voc-agent/internal/voice"
 )
 
@@ -24,6 +28,8 @@ func main() {
 	static := flag.String("static", "web/dist", "built web UI to serve; empty to disable")
 	ollamaURL := flag.String("ollama", "http://127.0.0.1:11434", "Ollama base URL")
 	model := flag.String("model", "qwen3:latest", "Ollama model")
+	dbPath := flag.String("db", "voc.db", "SQLite database")
+	notesDir := flag.String("notes", "notes", "folder of markdown/text notes to index")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -53,15 +59,37 @@ func main() {
 		log.Info("llm ready", "model", *model, "ms", time.Since(t).Milliseconds())
 	}()
 
-	srv := &server.Server{ASR: asr, VAD: vad, Agent: &agent.Session{LLM: ol, TTS: tts}, Log: log}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	st, err := store.Open(*dbPath)
+	fatal(log, err)
+	defer st.Close()
+	n, err := st.SyncNotes(ctx, *notesDir)
+	fatal(log, err)
+	log.Info("notes indexed", "dir", *notesDir, "changed", n)
+	go st.WatchNotes(ctx, *notesDir, 2*time.Second, func(err error) { log.Warn("notes sync", "err", err) })
+
+	sched := (&reminders.Scheduler{Store: st, Log: log}).Init()
+	reg := tools.NewRegistry(tools.Personal(st, nil, sched.Wake)...)
+	reg.Log = func(c tools.Call, name string, args, result json.RawMessage, ok bool, d time.Duration) {
+		log.Info("tool", "name", name, "args", string(args), "ok", ok, "ms", d.Milliseconds())
+		if err := st.LogToolCall(context.WithoutCancel(ctx), c.TurnKey, name, string(args), string(result), ok, d); err != nil {
+			log.Error("log tool call", "err", err)
+		}
+	}
+	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st)}
+	fatal(log, sess.Restore(ctx))
+
+	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log}
+	sched.CanDeliver, sched.Deliver = srv.Listening, srv.Notify
+	go sched.Run(ctx)
 	if *static != "" {
 		if _, err := os.Stat(*static); err == nil {
 			srv.Static = http.FileServer(http.Dir(*static))
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	hs := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()

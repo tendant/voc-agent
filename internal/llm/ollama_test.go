@@ -25,11 +25,11 @@ func TestOllamaStream(t *testing.T) {
 
 	o := &Ollama{BaseURL: ts.URL, Model: "m", Temperature: 0.3}
 	var deltas []string
-	full, err := o.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(d string) { deltas = append(deltas, d) })
+	msg, err := o.Chat(context.Background(), Request{Messages: []Message{{Role: "user", Content: "hi"}}}, func(d string) { deltas = append(deltas, d) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if full != "Hello there." || len(deltas) != 3 {
+	if full := msg.Content; full != "Hello there." || len(deltas) != 3 {
 		t.Fatalf("full=%q deltas=%q", full, deltas)
 	}
 	if got.Think || !got.Stream || got.Model != "m" || got.Options["temperature"] != 0.3 {
@@ -42,7 +42,7 @@ func TestOllamaErrorLine(t *testing.T) {
 		fmt.Fprintln(w, `{"error":"model not found"}`)
 	}))
 	defer ts.Close()
-	_, err := (&Ollama{BaseURL: ts.URL, Model: "m"}).Chat(context.Background(), nil, nil)
+	_, err := (&Ollama{BaseURL: ts.URL, Model: "m"}).Chat(context.Background(), Request{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "model not found") {
 		t.Fatalf("err = %v", err)
 	}
@@ -61,13 +61,39 @@ func TestOllamaLive(t *testing.T) {
 	}
 	t0 := time.Now()
 	var ttft time.Duration
-	full, err := o.Chat(ctx, []Message{{Role: "user", Content: "Say hello in five words."}}, func(string) {
+	msg, err := o.Chat(ctx, Request{Messages: []Message{{Role: "user", Content: "Say hello in five words."}}}, func(string) {
 		if ttft == 0 {
 			ttft = time.Since(t0)
 		}
 	})
-	if err != nil || full == "" {
-		t.Fatalf("%q %v", full, err)
+	if err != nil || msg.Content == "" {
+		t.Fatalf("%q %v", msg.Content, err)
 	}
-	t.Logf("ttft=%v total=%v reply=%q", ttft, time.Since(t0), full)
+	t.Logf("ttft=%v total=%v reply=%q", ttft, time.Since(t0), msg.Content)
+}
+
+func TestOllamaToolCalls(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"index":0,"name":"create_reminder","arguments":{"text":"call mom","when":"tomorrow"}}}]},"done":false}`)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":""},"done":true}`)
+	}))
+	defer ts.Close()
+	tool := Tool{Type: "function", Function: FunctionSpec{Name: "create_reminder", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	msg, err := (&Ollama{BaseURL: ts.URL, Model: "m"}).Chat(context.Background(), Request{
+		Messages: []Message{{Role: "tool", ToolName: "x", Content: "{}"}}, Tools: []Tool{tool}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "create_reminder" ||
+		string(msg.ToolCalls[0].Function.Arguments) != `{"text":"call mom","when":"tomorrow"}` {
+		t.Fatalf("tool calls: %+v", msg.ToolCalls)
+	}
+	if tools, _ := got["tools"].([]any); len(tools) != 1 {
+		t.Fatalf("tools not sent: %v", got)
+	}
+	if m := got["messages"].([]any)[0].(map[string]any); m["tool_name"] != "x" {
+		t.Fatalf("tool_name not sent: %v", m)
+	}
 }

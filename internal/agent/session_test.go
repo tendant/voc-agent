@@ -17,19 +17,19 @@ type fakeLLM struct {
 	got   []llm.Message
 }
 
-func (f *fakeLLM) Chat(ctx context.Context, msgs []llm.Message, on func(string)) (string, error) {
-	f.got = msgs
+func (f *fakeLLM) Chat(ctx context.Context, req llm.Request, on func(string)) (llm.Message, error) {
+	f.got = req.Messages
 	var b strings.Builder
 	for _, p := range f.parts {
 		select {
 		case <-ctx.Done():
-			return b.String(), ctx.Err()
+			return llm.Message{Content: b.String()}, ctx.Err()
 		case <-time.After(f.delay):
 		}
 		b.WriteString(p)
 		on(p)
 	}
-	return b.String(), nil
+	return llm.Message{Role: "assistant", Content: b.String()}, nil
 }
 
 type fakeTTS struct{}

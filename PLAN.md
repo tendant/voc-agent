@@ -89,12 +89,35 @@ browser, then switch Wi-Fi off and hold a conversation.
   show them in a debug panel.
 - **Exit check:** switch Wi-Fi off and hold a conversation.
 
-### M2: Memory and tools (~half a day) → demo items 2 and 3
+### M2: Memory and tools (~half a day) → demo items 2 and 3 — ✅ done 2026-11-08
+
+Exit criterion verified with live Qwen3 (`VOC_LIVE=1 go test ./internal/agent
+-run Live`, 3/3 runs, 18/18 turns): "Find my deployment notes and remind me
+to review them tomorrow" → recall + `search_notes` → `create_reminder` → one
+row due tomorrow 9:00 AM, linked to `work/deployment.md`. Smoke-tested on the
+real binary: a 1-minute reminder fired on time; after a restart nothing was
+duplicated or re-fired.
+
+What it took beyond the original plan: Qwen3-8B left to itself (a) claimed
+"I'll remind you" without calling the tool and (b) answered questions about
+notes from memory, inventing details. Two deterministic fixes:
+- **Required-tool guard:** if the user's words ask to create or list
+  reminders, that tool must be called before the turn ends. The reply in
+  that round is held back (no speech, no text) until a tool call backs it;
+  an unbacked reply is discarded and the model is told to call the tool.
+- **Automatic recall:** every utterance runs a local FTS search (<1 ms), and
+  the top two matching notes go into the context; `search_notes` remains for
+  follow-ups. This is also the hook for M3's privacy labels.
+
+Known gap: turns with tool calls take ~2–2.7 s to first audio (2–3 LLM
+rounds). An acknowledgement ("One moment.") on the first tool call would
+help; deferred to M4.
+
 
 - **SQLite:** `modernc.org/sqlite` (pure Go, has FTS5). Tables: `messages`,
   `notes(path, title, body)` with an FTS5 index,
   `reminders(id, idem_key UNIQUE, text, due_at, status)`, `tool_calls`.
-- **Note ingestion:** scan `notes/*.md` on startup and whenever a file changes.
+- **Note ingestion:** scan `notes/**/*.md|txt` on startup and poll every 2 s for changes.
 - **Typed tools:** each tool is a Go struct whose JSON schema is generated from
   the struct, then passed to Ollama's `tools` parameter:
   - `search_notes(query)` returns snippets plus the file path as a source

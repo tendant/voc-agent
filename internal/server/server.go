@@ -4,9 +4,10 @@
 //
 //	up   text   {"type":"ptt_start"} / {"type":"ptt_end"} / {"type":"text","text":...}
 //	up   binary PCM16 LE mono @ 16 kHz, any frame size (browser sends 20 ms)
-//	down text   agent.Event JSON: turn_start, transcript, llm_delta,
-//	            assistant_done, timing, error
+//	down text   agent.Event JSON: turn_start, transcript, llm_delta, tool_call,
+//	            tool_result, assistant_done, timing, reminder_fired, error
 //	down binary [uint32 LE turn][uint32 LE sample rate][PCM16 LE mono]
+//	            turn = NotifyTurn for reminder announcements (always played)
 //
 // A new ptt_start or text message cancels the turn in progress; the client
 // drops audio for turns other than the latest turn_start.
@@ -20,29 +21,40 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/tendant/voc-agent/internal/agent"
+	"github.com/tendant/voc-agent/internal/store"
 	"github.com/tendant/voc-agent/internal/voice"
 )
 
-type Server struct {
-	ASR    voice.ASR
-	VAD    voice.VAD
-	Agent  *agent.Session // single-user: one conversation shared by all tabs
-	Static http.Handler   // built web UI; nil in dev (Vite serves it)
-	Log    *slog.Logger
+// NotifyTurn tags audio that isn't part of a conversation turn (reminders).
+const NotifyTurn = ^uint32(0)
 
-	turns atomic.Uint32
+type Server struct {
+	ASR       voice.ASR
+	VAD       voice.VAD
+	TTS       voice.TTS      // for reminder announcements; may be nil
+	Agent     *agent.Session // single-user: one conversation shared by all tabs
+	Store     *store.Store   // for /api/reminders; may be nil
+	OnConnect func()         // e.g. wake the reminder scheduler
+	Static    http.Handler   // built web UI; nil in dev (Vite serves it)
+	Log       *slog.Logger
+
+	turns   atomic.Uint32
+	mu      sync.Mutex
+	clients map[*websocket.Conn]wsSink
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /ws", s.handleWS)
+	mux.HandleFunc("GET /api/reminders", s.handleReminders)
 	if s.Static != nil {
 		mux.Handle("/", s.Static)
 	}
@@ -87,6 +99,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	sink := wsSink{ctx: ctx, c: c}
 	log := s.Log.With("remote", r.RemoteAddr)
 	log.Info("ws connected")
+	s.addClient(c, sink)
+	defer s.removeClient(c)
+	if s.OnConnect != nil {
+		s.OnConnect()
+	}
 
 	var (
 		buf       []byte
@@ -152,6 +169,75 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			sink.Event(agent.Event{Type: "error", Error: "unknown type " + m.Type})
 		}
 	}
+}
+
+func (s *Server) addClient(c *websocket.Conn, sink wsSink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clients == nil {
+		s.clients = map[*websocket.Conn]wsSink{}
+	}
+	s.clients[c] = sink
+}
+
+func (s *Server) removeClient(c *websocket.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.clients, c)
+}
+
+// Listening reports whether any client is connected.
+func (s *Server) Listening() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.clients) > 0
+}
+
+func (s *Server) sinks() []wsSink {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]wsSink, 0, len(s.clients))
+	for _, k := range s.clients {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Notify announces a fired reminder on every connected client, as an event
+// and as speech.
+func (s *Server) Notify(r store.Reminder) {
+	ev := agent.Event{Type: "reminder_fired", Text: r.Text}
+	var audio *voice.Audio
+	if s.TTS != nil {
+		if a, err := s.TTS.Synthesize("Reminder: " + strings.TrimRight(r.Text, ".") + "."); err == nil {
+			audio = &a
+		} else {
+			s.Log.Error("reminder tts", "err", err)
+		}
+	}
+	for _, k := range s.sinks() {
+		k.Event(ev)
+		if audio != nil {
+			k.Audio(NotifyTurn, *audio)
+		}
+	}
+}
+
+func (s *Server) handleReminders(w http.ResponseWriter, r *http.Request) {
+	if s.Store == nil {
+		http.Error(w, "no store", http.StatusNotFound)
+		return
+	}
+	rs, err := s.Store.RecentReminders(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if rs == nil {
+		rs = []store.Reminder{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rs)
 }
 
 // runTurn transcribes pcm (unless text is given) and runs the agent turn.

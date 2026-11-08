@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Mic, Player } from './audio'
 
-type Line = { key: string; who: 'you' | 'assistant' | 'system'; text: string; meta?: string; partial?: boolean }
+type Line = {
+  key: string
+  who: 'you' | 'assistant' | 'system' | 'tool' | 'reminder'
+  text: string
+  meta?: string
+  partial?: boolean
+  ok?: boolean
+}
+type Reminder = { id: number; text: string; due_at: string; status: string; source?: string }
 type Status = 'connecting' | 'ready' | 'listening' | 'thinking' | 'speaking' | 'offline'
 type ServerEvent = {
   type: string
@@ -11,9 +19,36 @@ type ServerEvent = {
   final?: boolean
   ms?: Record<string, number>
   error?: string
+  name?: string
+  args?: unknown
+  result?: unknown
+  ok?: boolean
 }
 
-const STAGES = ['asr', 'llm_ttft', 'tts_first', 'heard', 'llm_done', 'total'] as const
+const NOTIFY_TURN = 0xffffffff
+
+/** One-line human summary of a tool call and its result for the transcript. */
+function describeTool(name: string, args: any, result: any, ok?: boolean): string {
+  if (ok === false) return `${name} failed: ${result?.error ?? 'error'}`
+  switch (name) {
+    case 'search_notes': {
+      const hits = (result?.results ?? []) as { title: string }[]
+      return `Searched notes for “${args?.query}”: ${hits.length ? hits.map((h) => h.title).join(', ') : 'no matches'}`
+    }
+    case 'create_reminder':
+      return `Reminder ${result?.status === 'already_exists' ? 'already existed' : 'created'}: “${result?.reminder?.text}”, ${result?.reminder?.due}`
+    case 'list_reminders':
+      return `Listed ${result?.count ?? 0} upcoming reminder(s)`
+  }
+  return `${name} ${JSON.stringify(args)}`
+}
+
+function fmtDue(iso: string) {
+  const d = new Date(iso)
+  return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+const STAGES = ['asr', 'llm_ttft', 'tts_first', 'heard', 'tools', 'llm_done', 'total'] as const
 
 export default function App() {
   const ws = useRef<WebSocket | null>(null)
@@ -30,6 +65,15 @@ export default function App() {
   const heard = useRef(false)
   const nextKey = useRef(0)
   const scroller = useRef<HTMLElement>(null)
+  const [reminders, setReminders] = useState<Reminder[]>([])
+  const pendingArgs = useRef<Record<string, unknown>>({})
+
+  const loadReminders = useCallback(() => {
+    fetch('/api/reminders')
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setReminders)
+      .catch(() => {})
+  }, [])
 
   const add = (l: Omit<Line, 'key'> & { key?: string }) =>
     setLines((ls) => [...ls, { key: `l${nextKey.current++}`, ...l }])
@@ -71,6 +115,11 @@ export default function App() {
           settle()
           add({ who: 'system', text: m.error ?? 'error' })
           return
+        case 'reminder_fired':
+          add({ who: 'reminder', text: `Reminder: ${m.text}` })
+          getPlayer() // make sure audio can play
+          loadReminders()
+          return
       }
       if (t !== turn.current) return // output from an abandoned turn
       switch (m.type) {
@@ -88,6 +137,21 @@ export default function App() {
         case 'timing':
           setTiming((x) => ({ ...x, ...m.ms }))
           break
+        case 'recall': {
+          const notes = (m.result ?? []) as { title: string }[]
+          add({ who: 'tool', text: `Looked in notes: ${notes.map((n) => n.title).join(', ')}` })
+          break
+        }
+        case 'tool_call':
+          pendingArgs.current[m.name!] = m.args
+          break
+        case 'tool_result':
+          add({ who: 'tool', text: describeTool(m.name!, pendingArgs.current[m.name!], m.result, m.ok), ok: m.ok, meta: `${m.ms?.ms ?? 0} ms` })
+          if (m.name?.includes('reminder')) loadReminders()
+          break
+        case 'guard':
+          add({ who: 'tool', text: `Guard: ${m.text}`, ok: false })
+          break
       }
     }
     const connect = () => {
@@ -96,6 +160,7 @@ export default function App() {
       s.onopen = () => {
         busy.current = false
         setStatus('ready')
+        loadReminders()
       }
       s.onclose = () => {
         setStatus('offline')
@@ -103,6 +168,10 @@ export default function App() {
       }
       s.onmessage = (e) => {
         if (!(e.data instanceof ArrayBuffer)) return onEvent(JSON.parse(e.data))
+        if (Player.turnOf(e.data) === NOTIFY_TURN) {
+          player.current?.play(e.data) // reminders always play
+          return
+        }
         if (Player.turnOf(e.data) !== turn.current || !player.current) return
         const wait = player.current.play(e.data)
         if (!heard.current) {
@@ -119,7 +188,7 @@ export default function App() {
       window.clearTimeout(retry)
       ws.current?.close()
     }
-  }, [])
+  }, [loadReminders])
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
@@ -210,8 +279,9 @@ export default function App() {
       <section className="transcript" aria-live="polite" ref={scroller}>
         {lines.length === 0 && <p className="muted">Hold the button (or the space bar) and speak, or type below.</p>}
         {lines.map((l) => (
-          <p key={l.key} className={l.who}>
-            <b>{l.who === 'you' ? 'You' : l.who === 'assistant' ? 'voc' : 'System'}</b> {l.text}
+          <p key={l.key} className={`${l.who}${l.ok === false ? ' bad' : ''}`}>
+            {l.who !== 'tool' && <b>{{ you: 'You', assistant: 'voc', system: 'System', reminder: '⏰' }[l.who]}</b>}{' '}
+            {l.text}
             {l.partial && <span className="cursor">▍</span>}
             {l.meta && <span className="tag">{l.meta}</span>}
           </p>
@@ -237,6 +307,23 @@ export default function App() {
           Send
         </button>
       </form>
+
+      {reminders.length > 0 && (
+        <section className="reminders" aria-label="Reminders">
+          <h2>Reminders</h2>
+          <ul>
+            {reminders.map((r) => (
+              <li key={r.id} className={r.status}>
+                <span>{r.text}</span>
+                <span className="muted">
+                  {r.status === 'fired' ? 'done · ' : ''}
+                  {fmtDue(r.due_at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <footer className="timing" title="Milliseconds after you finished speaking">
         {STAGES.filter((k) => k in timing).map((k) => (

@@ -52,3 +52,11 @@ footer { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-si
 .compose button:disabled { opacity: 0.5; cursor: default; }
 footer.timing { margin-left: 0; flex-wrap: wrap; min-height: 20px; }
 footer.timing .key b { color: var(--accent); }
+.transcript .tool { font-size: 13px; color: var(--muted); border-left: 2px solid var(--ok); padding-left: 8px; margin-left: 2px; }
+.transcript .tool.bad { border-left-color: var(--live); }
+.transcript .reminder { font-weight: 600; color: var(--accent); }
+.reminders { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; background: var(--card); }
+.reminders h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 6px; }
+.reminders ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.reminders li { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
+.reminders li.fired span:first-child { text-decoration: line-through; color: var(--muted); }

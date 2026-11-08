@@ -17,6 +17,7 @@ import (
 
 	"github.com/tendant/voc-agent/internal/agent"
 	"github.com/tendant/voc-agent/internal/llm"
+	"github.com/tendant/voc-agent/internal/store"
 	"github.com/tendant/voc-agent/internal/voice"
 )
 
@@ -25,19 +26,20 @@ const modelDir = "../../models"
 // echoLLM replies "You said: <last user message>." with a delay per word.
 type echoLLM struct{ delay time.Duration }
 
-func (e echoLLM) Chat(ctx context.Context, msgs []llm.Message, on func(string)) (string, error) {
+func (e echoLLM) Chat(ctx context.Context, req llm.Request, on func(string)) (llm.Message, error) {
+	msgs := req.Messages
 	words := strings.Fields("You said: " + msgs[len(msgs)-1].Content)
 	var b strings.Builder
 	for _, w := range words {
 		select {
 		case <-ctx.Done():
-			return b.String(), ctx.Err()
+			return llm.Message{Content: b.String()}, ctx.Err()
 		case <-time.After(e.delay):
 		}
 		b.WriteString(w + " ")
 		on(w + " ")
 	}
-	return b.String(), nil
+	return llm.Message{Role: "assistant", Content: b.String()}, nil
 }
 
 type toneTTS struct{}
@@ -162,5 +164,28 @@ func TestInterrupt(t *testing.T) {
 	h := sess.History()
 	if len(h) != 4 || !strings.HasSuffix(h[1].Content, "[interrupted]") || h[2].Content != "stop" {
 		t.Fatalf("history: %+v", h)
+	}
+}
+
+func TestNotifyBroadcasts(t *testing.T) {
+	srv := &Server{TTS: toneTTS{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if srv.Listening() {
+		t.Fatal("no clients yet")
+	}
+	c := dial(t, srv)
+	c.send(`{"type":"text","text":""}`) // ignored; ensures the server registered us
+	for i := 0; i < 50 && !srv.Listening(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	srv.Notify(store.Reminder{Text: "Stretch"})
+	_, data, _ := c.c.Read(c.ctx)
+	var e agent.Event
+	json.Unmarshal(data, &e)
+	if e.Type != "reminder_fired" || e.Text != "Stretch" {
+		t.Fatalf("event %+v", e)
+	}
+	typ, data, _ := c.c.Read(c.ctx)
+	if typ != websocket.MessageBinary || binary.LittleEndian.Uint32(data) != NotifyTurn {
+		t.Fatal("expected reminder audio tagged NotifyTurn")
 	}
 }

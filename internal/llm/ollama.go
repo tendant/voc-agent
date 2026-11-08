@@ -23,6 +23,7 @@ type Ollama struct {
 type ollamaReq struct {
 	Model     string         `json:"model"`
 	Messages  []Message      `json:"messages"`
+	Tools     []Tool         `json:"tools,omitempty"`
 	Stream    bool           `json:"stream"`
 	Think     bool           `json:"think"` // false: skip Qwen3 reasoning, too slow for voice
 	KeepAlive string         `json:"keep_alive,omitempty"`
@@ -64,28 +65,36 @@ func (o *Ollama) post(ctx context.Context, body ollamaReq) (*http.Response, erro
 	return resp, nil
 }
 
-func (o *Ollama) Chat(ctx context.Context, msgs []Message, onDelta func(string)) (string, error) {
-	req := ollamaReq{Model: o.Model, Messages: msgs, Stream: true, KeepAlive: o.KeepAlive}
+func (o *Ollama) Chat(ctx context.Context, r Request, onDelta func(string)) (Message, error) {
+	req := ollamaReq{Model: o.Model, Messages: r.Messages, Tools: r.Tools, Stream: true, KeepAlive: o.KeepAlive}
+	if req.Messages == nil {
+		req.Messages = []Message{}
+	}
 	if o.Temperature > 0 {
 		req.Options = map[string]any{"temperature": o.Temperature}
 	}
 	resp, err := o.post(ctx, req)
 	if err != nil {
-		return "", err
+		return Message{}, err
 	}
 	defer resp.Body.Close()
 
 	var full strings.Builder
+	var calls []ToolCall
+	result := func() Message {
+		return Message{Role: "assistant", Content: full.String(), ToolCalls: calls}
+	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
 		var c ollamaChunk
 		if err := json.Unmarshal(sc.Bytes(), &c); err != nil {
-			return full.String(), fmt.Errorf("ollama: bad stream line: %w", err)
+			return result(), fmt.Errorf("ollama: bad stream line: %w", err)
 		}
 		if c.Error != "" {
-			return full.String(), fmt.Errorf("ollama: %s", c.Error)
+			return result(), fmt.Errorf("ollama: %s", c.Error)
 		}
+		calls = append(calls, c.Message.ToolCalls...)
 		if d := c.Message.Content; d != "" {
 			full.WriteString(d)
 			if onDelta != nil {
@@ -93,13 +102,16 @@ func (o *Ollama) Chat(ctx context.Context, msgs []Message, onDelta func(string))
 			}
 		}
 		if c.Done {
-			return full.String(), nil
+			return result(), nil
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return full.String(), err
+		return result(), err
 	}
-	return full.String(), ctx.Err()
+	if ctx.Err() != nil {
+		return result(), ctx.Err()
+	}
+	return result(), fmt.Errorf("ollama: stream ended early")
 }
 
 // Warm loads the model into memory so the first real turn doesn't pay the
