@@ -41,3 +41,14 @@ h1 { font-size: 20px; margin: 0; letter-spacing: -0.02em; }
 .ptt:disabled { opacity: 0.55; cursor: default; }
 footer { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 14px; }
 .timing { margin-left: auto; display: flex; gap: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dot.speaking { background: var(--accent); }
+.ptt.thinking, .ptt.speaking { background: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+.transcript .assistant b { color: var(--accent); }
+.cursor { margin-left: 2px; animation: blink 1s steps(1) infinite; color: var(--muted); }
+@keyframes blink { 50% { opacity: 0; } }
+.compose { display: flex; gap: 8px; }
+.compose input { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+.compose button { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+.compose button:disabled { opacity: 0.5; cursor: default; }
+footer.timing { margin-left: 0; flex-wrap: wrap; min-height: 20px; }
+footer.timing .key b { color: var(--accent); }

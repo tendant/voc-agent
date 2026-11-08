@@ -31,17 +31,22 @@ export class Mic {
   }
 }
 
-/** Plays downstream frames: [u32 seq][u32 sampleRate][PCM16 LE mono]. */
+/** Plays downstream frames: [u32 turn][u32 sampleRate][PCM16 LE mono]. */
 export class Player {
   private ctx = new AudioContext()
   private next = 0
-  onLevel?: (playing: boolean) => void
+  private sources = new Set<AudioBufferSourceNode>()
+  onPlaying?: (playing: boolean) => void
 
-  play(frame: ArrayBuffer) {
-    const view = new DataView(frame)
-    const rate = view.getUint32(4, true)
+  static turnOf(frame: ArrayBuffer) {
+    return new DataView(frame).getUint32(0, true)
+  }
+
+  /** Schedules a frame right after the previous one. Returns ms until it starts. */
+  play(frame: ArrayBuffer): number {
+    const rate = new DataView(frame).getUint32(4, true)
     const pcm = new Int16Array(frame, 8)
-    if (pcm.length === 0) return
+    if (pcm.length === 0) return 0
     const buf = this.ctx.createBuffer(1, pcm.length, rate)
     const ch = buf.getChannelData(0)
     for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768
@@ -52,9 +57,23 @@ export class Player {
     const at = Math.max(this.ctx.currentTime + 0.02, this.next)
     src.start(at)
     this.next = at + buf.duration
-    this.onLevel?.(true)
+    this.sources.add(src)
+    this.onPlaying?.(true)
     src.onended = () => {
-      if (this.ctx.currentTime >= this.next - 0.01) this.onLevel?.(false)
+      this.sources.delete(src)
+      if (this.sources.size === 0) this.onPlaying?.(false)
     }
+    return (at - this.ctx.currentTime) * 1000
+  }
+
+  /** Stops everything that is playing or queued. */
+  stop() {
+    for (const s of this.sources) {
+      s.onended = null
+      s.stop()
+    }
+    this.sources.clear()
+    this.next = 0
+    this.onPlaying?.(false)
   }
 }

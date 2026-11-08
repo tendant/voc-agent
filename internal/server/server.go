@@ -1,11 +1,15 @@
 // Package server exposes the HTTP and WebSocket endpoints the browser talks to.
 //
-// WebSocket protocol (M0 subset, see PLAN.md):
+// WebSocket protocol (see PLAN.md):
 //
-//	up   text   {"type":"ptt_start"} / {"type":"ptt_end"}
+//	up   text   {"type":"ptt_start"} / {"type":"ptt_end"} / {"type":"text","text":...}
 //	up   binary PCM16 LE mono @ 16 kHz, any frame size (browser sends 20 ms)
-//	down text   {"type":"transcript","text":...,"final":true}, {"type":"timing",...}, {"type":"error",...}
-//	down binary [uint32 LE seq][uint32 LE sample rate][PCM16 LE mono]
+//	down text   agent.Event JSON: turn_start, transcript, llm_delta,
+//	            assistant_done, timing, error
+//	down binary [uint32 LE turn][uint32 LE sample rate][PCM16 LE mono]
+//
+// A new ptt_start or text message cancels the turn in progress; the client
+// drops audio for turns other than the latest turn_start.
 package server
 
 import (
@@ -15,18 +19,24 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/tendant/voc-agent/internal/agent"
 	"github.com/tendant/voc-agent/internal/voice"
 )
 
 type Server struct {
 	ASR    voice.ASR
 	VAD    voice.VAD
-	Static http.Handler // built web UI; nil in dev (Vite serves it)
+	Agent  *agent.Session // single-user: one conversation shared by all tabs
+	Static http.Handler   // built web UI; nil in dev (Vite serves it)
 	Log    *slog.Logger
+
+	turns atomic.Uint32
 }
 
 func (s *Server) Handler() http.Handler {
@@ -39,17 +49,29 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-type msg struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	Final bool           `json:"final,omitempty"`
-	Lang  string         `json:"lang,omitempty"`
-	MS    map[string]int `json:"ms,omitempty"`
-	Error string         `json:"error,omitempty"`
+type upMsg struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // maxUtterance caps buffered audio per push-to-talk press (60 s).
 const maxUtterance = 60 * voice.SampleRate * 2
+
+// wsSink sends turn output over the connection. websocket.Conn.Write is safe
+// for concurrent use.
+type wsSink struct {
+	ctx context.Context
+	c   *websocket.Conn
+}
+
+func (w wsSink) Event(e agent.Event) error {
+	b, _ := json.Marshal(e)
+	return w.c.Write(w.ctx, websocket.MessageText, b)
+}
+
+func (w wsSink) Audio(turn uint32, a voice.Audio) error {
+	return w.c.Write(w.ctx, websocket.MessageBinary, audioFrame(turn, a.SampleRate, voice.FloatToPCM16(a.Samples)))
+}
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -62,17 +84,34 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer c.CloseNow()
 	c.SetReadLimit(1 << 20)
 	ctx := r.Context()
+	sink := wsSink{ctx: ctx, c: c}
 	log := s.Log.With("remote", r.RemoteAddr)
 	log.Info("ws connected")
 
 	var (
 		buf       []byte
 		recording bool
-		seq       uint32
+		cancel    context.CancelFunc
+		done      chan struct{}
 	)
-	send := func(m msg) error {
-		b, _ := json.Marshal(m)
-		return c.Write(ctx, websocket.MessageText, b)
+	stopTurn := func() {
+		if cancel != nil {
+			cancel()
+			<-done
+			cancel = nil
+		}
+	}
+	defer stopTurn()
+	startTurn := func(pcm []byte, text string) {
+		stopTurn()
+		var tctx context.Context
+		tctx, cancel = context.WithCancel(ctx)
+		done = make(chan struct{})
+		turn := s.turns.Add(1)
+		go func(done chan struct{}) {
+			defer close(done)
+			s.runTurn(tctx, turn, pcm, text, sink, log)
+		}(done)
 	}
 
 	for {
@@ -90,63 +129,88 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		var m msg
+		var m upMsg
 		if err := json.Unmarshal(data, &m); err != nil {
-			send(msg{Type: "error", Error: "bad json"})
+			sink.Event(agent.Event{Type: "error", Error: "bad json"})
 			continue
 		}
 		switch m.Type {
 		case "ptt_start":
-			buf, recording = buf[:0], true
+			stopTurn() // talking over the assistant interrupts it
+			buf, recording = nil, true
 		case "ptt_end":
 			recording = false
-			if len(buf) < 2 {
-				continue
+			if len(buf) >= 2 {
+				startTurn(buf, "")
 			}
-			pcm := buf
-			// M0 round trip: echo what we heard, then transcribe it.
-			seq++
-			if err := c.Write(ctx, websocket.MessageBinary, audioFrame(seq, voice.SampleRate, pcm)); err != nil {
-				return
-			}
-			if err := s.transcribe(pcm, send); err != nil {
-				log.Error("transcribe", "err", err)
-				send(msg{Type: "error", Error: err.Error()})
+			buf = nil
+		case "text":
+			if t := strings.TrimSpace(m.Text); t != "" {
+				startTurn(nil, t)
 			}
 		default:
-			send(msg{Type: "error", Error: "unknown type " + m.Type})
+			sink.Event(agent.Event{Type: "error", Error: "unknown type " + m.Type})
 		}
 	}
 }
 
-func (s *Server) transcribe(pcm []byte, send func(msg) error) error {
+// runTurn transcribes pcm (unless text is given) and runs the agent turn.
+func (s *Server) runTurn(ctx context.Context, turn uint32, pcm []byte, text string, sink agent.Sink, log *slog.Logger) {
+	start := time.Now()
+	sink.Event(agent.Event{Type: "turn_start", Turn: turn})
+	if pcm != nil {
+		tr, ms, err := s.transcribe(pcm)
+		if err != nil {
+			log.Error("transcribe", "err", err)
+			sink.Event(agent.Event{Type: "error", Turn: turn, Error: err.Error()})
+			return
+		}
+		sink.Event(agent.Event{Type: "transcript", Turn: turn, Final: true, Text: tr.Text, Lang: tr.Lang})
+		sink.Event(agent.Event{Type: "timing", Turn: turn, MS: ms})
+		text = tr.Text
+		if text == "" {
+			sink.Event(agent.Event{Type: "assistant_done", Turn: turn, Final: true})
+			return
+		}
+	}
+	if s.Agent == nil {
+		return
+	}
+	err := s.Agent.Turn(ctx, turn, text, start, sink)
+	switch {
+	case errors.Is(err, context.Canceled):
+		log.Info("turn interrupted", "turn", turn)
+	case err != nil:
+		log.Error("turn", "turn", turn, "err", err)
+		sink.Event(agent.Event{Type: "error", Turn: turn, Error: err.Error()})
+	default:
+		log.Info("turn done", "turn", turn, "ms", time.Since(start).Milliseconds())
+	}
+}
+
+func (s *Server) transcribe(pcm []byte) (voice.Transcript, map[string]int, error) {
 	samples := voice.PCM16ToFloat(pcm)
 	t0 := time.Now()
 	speech := s.VAD.Trim(samples)
 	tVAD := time.Since(t0)
 	if len(speech) == 0 {
-		return send(msg{Type: "transcript", Final: true, Text: ""})
+		return voice.Transcript{}, map[string]int{"vad": int(tVAD.Milliseconds())}, nil
 	}
 	t1 := time.Now()
 	tr, err := s.ASR.Transcribe(speech)
 	if err != nil {
-		return err
+		return tr, nil, err
 	}
 	tASR := time.Since(t1)
 	s.Log.Info("utterance", "audio_s", float64(len(samples))/voice.SampleRate,
 		"vad_ms", tVAD.Milliseconds(), "asr_ms", tASR.Milliseconds(), "text", tr.Text)
-	if err := send(msg{Type: "transcript", Final: true, Text: tr.Text, Lang: tr.Lang}); err != nil {
-		return err
-	}
-	return send(msg{Type: "timing", MS: map[string]int{
-		"vad": int(tVAD.Milliseconds()), "asr": int(tASR.Milliseconds()),
-	}})
+	return tr, map[string]int{"vad": int(tVAD.Milliseconds()), "asr": int((tVAD + tASR).Milliseconds())}, nil
 }
 
 // audioFrame builds a downstream binary audio message.
-func audioFrame(seq uint32, rate int, pcm []byte) []byte {
+func audioFrame(turn uint32, rate int, pcm []byte) []byte {
 	out := make([]byte, 8+len(pcm))
-	binary.LittleEndian.PutUint32(out[0:], seq)
+	binary.LittleEndian.PutUint32(out[0:], turn)
 	binary.LittleEndian.PutUint32(out[4:], uint32(rate))
 	copy(out[8:], pcm)
 	return out

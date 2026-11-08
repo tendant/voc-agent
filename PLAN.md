@@ -65,7 +65,15 @@ needed. Measured on the M4 Max: models load in ~0.4–0.6 s, Piper RTF ≈ 0.02
 - Echo audio over the WebSocket to confirm the round trip works.
 - Spike the sherpa-onnx Go bindings (ASR + TTS on a test file).
 
-### M1: Offline voice loop (~half a day) → demo item 1
+### M1: Offline voice loop (~half a day) → demo item 1 — 🟡 built, browser mic check pending
+
+Measured end to end (`VOC_LIVE=1 go test ./internal/server -run Live`): audio
+is ready to play 378–610 ms after the user stops speaking (ASR ~30 ms, Qwen3
+first token 200–460 ms, first sentence of TTS ~60 ms), against a 3 s target.
+Follow-up questions use conversation context. While running, the server holds
+only loopback sockets (`lsof`). Still to do: try the real microphone in a
+browser, then switch Wi-Fi off and hold a conversation.
+
 
 - **Browser:** a push-to-talk button. An AudioWorklet resamples the mic to
   16 kHz mono PCM16 and sends 20 ms frames, so Go never has to decode webm/opus.
