@@ -145,9 +145,51 @@ func TestRequiredTools(t *testing.T) {
 			t.Errorf("%q: %v", in, got)
 		}
 	}
+	for _, in := range []string{"Ask the cloud whether my plan is risky", "can you check with Claude", "use the cloud for this"} {
+		if r := requiredTools(in); len(r) != 1 || r[0] != "ask_cloud" {
+			t.Errorf("%q: %v", in, r)
+		}
+	}
 	for _, in := range []string{"what reminders do I have", "list my reminders", "Do I have any reminders?", "show upcoming reminders"} {
 		if r := requiredTools(in); len(r) != 1 || r[0] != "list_reminders" {
 			t.Errorf("%q: %v", in, r)
 		}
+	}
+}
+
+// sayTool returns a result that should be spoken verbatim.
+type sayOut struct{ A string }
+
+func (s sayOut) Say() string { return s.A }
+
+func TestToolSayEndsTurnVerbatim(t *testing.T) {
+	type noArgs struct{}
+	approvals := 0
+	reg := tools.NewRegistry(tools.Typed("ask_cloud", "d", func(ctx context.Context, c tools.Call, _ noArgs) (any, error) {
+		ok, _ := c.Approve(ctx, tools.ApprovalRequest{ID: "x"})
+		if !ok {
+			return nil, nil
+		}
+		return sayOut{"The cloud says: use a canary."}, nil
+	}))
+	f := &scriptLLM{rounds: []llm.Message{
+		{Role: "assistant", Content: "Checking with the cloud.", ToolCalls: []llm.ToolCall{call("ask_cloud", `{}`)}},
+		{Role: "assistant", Content: "SHOULD NOT RUN"},
+	}}
+	s := &Session{LLM: f, TTS: fakeTTS{}, Tools: reg,
+		Approver: func(_ context.Context, turn uint32, _ Sink, req tools.ApprovalRequest) (bool, error) {
+			approvals++
+			return turn == 7 && req.ID == "x", nil
+		}}
+	r := &rec{}
+	if err := s.Turn(context.Background(), 7, "ask the cloud about canaries", time.Now(), r); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.reqs) != 1 || approvals != 1 {
+		t.Fatalf("rounds=%d approvals=%d", len(f.reqs), approvals)
+	}
+	done := r.events[len(r.events)-2]
+	if done.Type != "assistant_done" || done.Text != "Checking with the cloud. The cloud says: use a canary." {
+		t.Fatalf("done: %+v", done)
 	}
 }

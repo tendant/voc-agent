@@ -13,7 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go/v2/option"
+
 	"github.com/tendant/voc-agent/internal/agent"
+	"github.com/tendant/voc-agent/internal/cloud"
 	"github.com/tendant/voc-agent/internal/llm"
 	"github.com/tendant/voc-agent/internal/reminders"
 	"github.com/tendant/voc-agent/internal/server"
@@ -30,6 +33,8 @@ func main() {
 	model := flag.String("model", "qwen3:latest", "Ollama model")
 	dbPath := flag.String("db", "voc.db", "SQLite database")
 	notesDir := flag.String("notes", "notes", "folder of markdown/text notes to index")
+	cloudMode := flag.String("cloud", "auto", "cloud escalation: auto (on if ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN is set), on, off, or fake (local stand-in API for demos)")
+	cloudModel := flag.String("cloud-model", cloud.DefaultModel, "Claude model for escalations")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -71,7 +76,15 @@ func main() {
 	go st.WatchNotes(ctx, *notesDir, 2*time.Second, func(err error) { log.Warn("notes sync", "err", err) })
 
 	sched := (&reminders.Scheduler{Store: st, Log: log}).Init()
-	reg := tools.NewRegistry(tools.Personal(st, nil, sched.Wake)...)
+	toolset := tools.Personal(st, nil, sched.Wake)
+	cl, cloudStatus := setupCloud(*cloudMode, *cloudModel)
+	if cl != nil {
+		toolset = append(toolset, tools.Escalate(st, cl))
+		log.Info("cloud escalation enabled (every request needs approval)", "model", cl.Model, "destination", cl.Destination())
+	} else {
+		log.Info("cloud escalation disabled", "why", cloudStatus.Why)
+	}
+	reg := tools.NewRegistry(toolset...)
 	reg.Log = func(c tools.Call, name string, args, result json.RawMessage, ok bool, d time.Duration) {
 		log.Info("tool", "name", name, "args", string(args), "ok", ok, "ms", d.Milliseconds())
 		if err := st.LogToolCall(context.WithoutCancel(ctx), c.TurnKey, name, string(args), string(result), ok, d); err != nil {
@@ -81,7 +94,8 @@ func main() {
 	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st)}
 	fatal(log, sess.Restore(ctx))
 
-	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log}
+	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus}
+	sess.Approver = srv.Approve
 	sched.CanDeliver, sched.Deliver = srv.Listening, srv.Notify
 	go sched.Run(ctx)
 	if *static != "" {
@@ -108,4 +122,24 @@ func fatal(log *slog.Logger, err error) {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+func setupCloud(mode, model string) (*cloud.Claude, server.CloudStatus) {
+	switch mode {
+	case "off":
+		return nil, server.CloudStatus{Why: "turned off with -cloud=off"}
+	case "fake":
+		api := cloud.NewFakeAPI("This is a canned answer from the local fake cloud API. With a real key, Claude would answer here.")
+		c := cloud.New(model, option.WithBaseURL(api.URL()), option.WithAPIKey("fake")).WithHost("FAKE local test API (nothing leaves this machine)")
+		return c, server.CloudStatus{Enabled: true, Model: c.Model, Destination: c.Destination()}
+	case "auto":
+		if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+			return nil, server.CloudStatus{Why: "no ANTHROPIC_API_KEY set (use -cloud=on to rely on another credential source)"}
+		}
+	case "on":
+	default:
+		return nil, server.CloudStatus{Why: "unknown -cloud mode " + mode}
+	}
+	c := cloud.New(model)
+	return c, server.CloudStatus{Enabled: true, Model: c.Model, Destination: c.Destination()}
 }

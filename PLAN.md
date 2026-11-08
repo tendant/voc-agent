@@ -134,7 +134,39 @@ help; deferred to M4.
 - **Exit check:** "Find my deployment notes and remind me to review them
   tomorrow" finds the note, cites it, and creates a single reminder row.
 
-### M3: Safe cloud escalation (~half a day) → demo item 4
+### M3: Safe cloud escalation (~half a day) → demo item 4 — ✅ done 2026-11-08 (verified with a fake API; no real Claude call yet)
+
+Exit criterion verified with local Qwen3 and a local stand-in Messages API
+(`VOC_LIVE=1 go test ./internal/agent -run LiveCloud`, 2/2 runs): "Ask the
+cloud for a workout plan that fits my knee recovery". Qwen first copied the
+private health schedule into the question. The fingerprint check blocked it
+before approval. Qwen rewrote it as a general question, which was approved
+and sent with no local_only text, and the audit log holds the exact bytes. A
+billing-plan review sent the deployment note with its email redacted. A
+denied request sent nothing. No API key was available here, so a real Claude
+call is still untested (`-cloud=on` with `ANTHROPIC_API_KEY`).
+
+As built (differs from the sketch below):
+- **Cloud model:** `claude-opus-5-5` via the official Go SDK (thinking is
+  adaptive by default, effort `medium`, `fallbacks: "default"` for refusals);
+  `-cloud-model` overrides it.
+- **Send-time verification:** SDK middleware sees the real HTTP body. It
+  refuses anything that differs from the approved payload, re-runs the leak
+  check, and records the actual bytes and their SHA-256 for the audit log.
+- **Minimization:** a personal note is sent only if it's clearly about the
+  question: its title matches and at least 2 terms match overall, or 30% of
+  the terms are covered. Conversation history is never sent.
+- **Leak check:** 6-word fingerprints of local_only notes are compared
+  against every string in the outbound JSON. A hit blocks the request; the
+  model gets one chance to rephrase.
+- **Known limit, paraphrase:** fingerprints only catch copied text.
+  Distinctive words found only in local_only notes are shown as warnings in
+  the approval dialog; the user decides.
+- **Approval:** an on-screen dialog with the exact body, what's excluded and
+  why, and the redaction counts; or say "approve" / "cancel".
+- `-cloud=fake` runs a labeled local stand-in API, so the flow can be demoed
+  offline.
+
 
 - **Data labels:** every piece of context carries a privacy label (`public`,
   `personal`, `local_only`). Notes in `notes/private/` and all reminders are

@@ -70,7 +70,8 @@ You have tools for the user's private notes and reminders. Rules:
 1. The user's notes are your only knowledge of their life. Notes that match the user's words are provided below their message. Answer questions about the user's own work, home, people, plans, or schedule only from those notes or from search_notes results, and mention the note's title. If the provided notes don't answer it, call search_notes with different keywords. If still nothing, say you couldn't find it in their notes. Never guess or invent details.
 2. When the user asks to be reminded of something, you must call create_reminder, passing "when" exactly as the user said it. A reminder exists only after create_reminder returns status "created" or "already_exists"; then confirm it using the "due" text it returns. If it returns an error, tell the user briefly or ask when they meant.
 3. If a request has several parts, make one tool call for each part, in order. For example: search_notes, then create_reminder.
-4. Never say file paths or tool names out loud.
+4. If ask_cloud is available, use it when the user asks for the cloud or Claude, or when a question needs deep reasoning or knowledge you lack. Write a self-contained question and never copy private details into it. The user approves what is sent.
+5. Never say file paths or tool names out loud.
 You cannot use a calendar, email, or the internet.`
 
 const noToolPrompt = `
@@ -83,6 +84,7 @@ const maxToolRounds = 4
 // reminders do I have" from stale conversation memory.
 var (
 	remindIntent = regexp.MustCompile(`(?i)\bremind (me|us)\b|\b(set|create|add|make|schedule) (me )?(a |an |another )?reminders?\b`)
+	cloudIntent  = regexp.MustCompile(`(?i)\b(ask|use|check with|escalate to|send (it|this) to)( the)? (cloud|claude)\b`)
 	listIntent   = regexp.MustCompile(`(?i)\b(what|which|any|list|show|read|upcoming|pending|my)\b.*\breminders\b|\breminders\b.*\b(do i|have i|are there)\b`)
 )
 
@@ -90,6 +92,8 @@ var (
 // turn loop refuses to finish until they have been called.
 func requiredTools(user string) []string {
 	switch {
+	case cloudIntent.MatchString(user):
+		return []string{"ask_cloud"}
 	case remindIntent.MatchString(user):
 		return []string{"create_reminder"}
 	case listIntent.MatchString(user):
@@ -108,7 +112,10 @@ type Session struct {
 	// Recall finds notes relevant to what the user said; they are added to
 	// the model's context every turn so answers don't depend on the model
 	// remembering to search. May be nil.
-	Recall     func(ctx context.Context, user string) ([]Recalled, error)
+	Recall func(ctx context.Context, user string) ([]Recalled, error)
+	// Approver asks the user to allow a sensitive action (cloud escalation)
+	// and blocks until they decide. Nil means every request is refused.
+	Approver   func(ctx context.Context, turn uint32, sink Sink, req tools.ApprovalRequest) (bool, error)
 	MaxHistory int // messages kept, excluding the system prompt; default 20
 	Now        func() time.Time
 
@@ -239,9 +246,16 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			}
 		}
 		call := tools.Call{TurnKey: newTurnKey()}
-		required := requiredTools(user)
-		if s.Tools == nil {
-			required = nil
+		if s.Approver != nil {
+			call.Approve = func(ctx context.Context, req tools.ApprovalRequest) (bool, error) {
+				return s.Approver(ctx, turn, sink, req)
+			}
+		}
+		var required []string
+		for _, r := range requiredTools(user) {
+			if s.Tools != nil && s.Tools.Has(r) { // e.g. ask_cloud only when cloud is enabled
+				required = append(required, r)
+			}
 		}
 		called := map[string]bool{}
 		unmet := func() []string {
@@ -312,6 +326,7 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 				break
 			}
 			msgs = append(msgs, reply)
+			var verbatim string
 			for _, tc := range reply.ToolCalls {
 				if ctx.Err() != nil {
 					break
@@ -323,9 +338,25 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 				ok := res.OK
 				sink.Event(Event{Type: "tool_result", Turn: turn, Name: tc.Function.Name, Result: res.JSON, OK: &ok, MS: map[string]int{"ms": res.MS}})
 				msgs = append(msgs, llm.Message{Role: "tool", ToolName: tc.Function.Name, Content: string(res.JSON)})
+				if res.Say != "" {
+					verbatim = res.Say
+				}
 			}
 			if ctx.Err() != nil {
 				llmErr = ctx.Err()
+				break
+			}
+			if verbatim != "" {
+				// The tool's answer is the reply (e.g. from the cloud): speak it
+				// verbatim instead of having the local model paraphrase it.
+				if spoken.Len() > 0 {
+					spoken.WriteString(" ")
+				}
+				spoken.WriteString(verbatim)
+				sink.Event(Event{Type: "llm_delta", Turn: turn, Text: verbatim})
+				ch := &Chunker{MinLen: 12}
+				emit(ch.Push(verbatim))
+				emit(ch.Flush())
 				break
 			}
 		}

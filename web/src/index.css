@@ -60,3 +60,31 @@ footer.timing .key b { color: var(--accent); }
 .reminders ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .reminders li { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
 .reminders li.fired span:first-child { text-decoration: line-through; color: var(--muted); }
+header .cloud { margin-left: auto; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--muted); }
+header .cloud.on { color: var(--accent); border-color: var(--accent); }
+.overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 40%, transparent); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+.dialog { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; width: min(640px, 100%); max-height: 90dvh; overflow-y: auto; box-shadow: 0 10px 40px rgb(0 0 0 / 0.25); }
+.dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 12px; font-size: 14px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.kept, .sent { font-size: 14px; margin-bottom: 8px; }
+.kept ul, .sent ul { margin: 4px 0 0; padding-left: 18px; }
+.kept b { color: var(--ok); }
+.small { font-size: 12px; }
+.payload { font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+.actions button { font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); cursor: pointer; }
+.actions .approve { background: var(--accent); color: white; border-color: var(--accent); }
+.actions .deny { background: var(--card); color: var(--fg); }
+.audit { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; background: var(--card); font-size: 14px; }
+.audit > summary { cursor: pointer; font-weight: 600; }
+.audit ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.audit .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 4px; padding: 1px 6px; border: 1px solid var(--line); }
+.badge.approved { color: var(--accent); border-color: var(--accent); }
+.badge.blocked, .badge.error { color: var(--live); border-color: var(--live); }
+.badge.denied { color: var(--muted); }
+.warn { font-size: 14px; border: 1px solid var(--live); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; color: var(--fg); }
+.warn b { color: var(--live); }
+.warn code { margin-left: 4px; font-size: 13px; padding: 0 4px; border-radius: 4px; background: var(--bg); }

@@ -28,6 +28,21 @@ Try:
 - "What's the rollback plan?" / "When does the trash go out?"
 - "Remind me to stretch in two minutes." (it speaks the reminder when due)
 - "What reminders do I have?"
+- "Ask Claude to review my billing deployment plan for risks." (needs `-cloud`)
+
+### Cloud escalation (optional)
+
+```sh
+ANTHROPIC_API_KEY=... ./bin/voc      # -cloud=auto turns it on when a key is set
+./bin/voc -cloud=fake                # demo the approval flow offline (local stand-in API)
+```
+
+Say "ask the cloud …" or "ask Claude …". Before anything leaves the machine
+you see the destination, the exact request body, which notes are withheld or
+redacted, and any warnings, then approve or cancel (click, or say it). Notes
+under `notes/private/`, or with `privacy: local_only` front matter, never
+leave the device. Every decision and the exact bytes sent are in the
+"Outbound log" (`/api/audit`).
 
 Notes are the Markdown/text files under `./notes` (sample notes included;
 point `-notes` at your own folder). They are re-indexed every 2 s. Reminders,

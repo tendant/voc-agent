@@ -22,7 +22,24 @@ type Call struct {
 	// tools derive idempotency keys from it so a retried call in the same turn
 	// doesn't act twice.
 	TurnKey string
+	// Approve asks the user to allow an action and blocks until they answer.
+	// Nil means approvals are unavailable, which tools must treat as "no".
+	Approve func(ctx context.Context, req ApprovalRequest) (bool, error)
 }
+
+// ApprovalRequest is shown to the user before data leaves the device.
+type ApprovalRequest struct {
+	ID          string          `json:"id"`
+	Destination string          `json:"destination"`
+	Model       string          `json:"model"`
+	Reason      string          `json:"reason"`
+	Payload     json.RawMessage `json:"payload"` // the exact request body
+	Policy      json.RawMessage `json:"policy"`  // included/excluded sources
+}
+
+// Sayer is implemented by tool results that should be spoken verbatim as the
+// assistant's reply (e.g. a cloud answer), ending the turn.
+type Sayer interface{ Say() string }
 
 type Tool struct {
 	Name        string
@@ -151,6 +168,7 @@ type Result struct {
 	OK   bool            `json:"ok"`
 	JSON json.RawMessage `json:"result"` // the tool's result, or {"error": ...}
 	MS   int             `json:"ms"`
+	Say  string          `json:"-"` // speak this verbatim and end the turn
 }
 
 // Run executes a tool call. Failures (unknown tool, bad arguments, tool
@@ -173,12 +191,17 @@ func (r *Registry) Run(ctx context.Context, c Call, name string, args json.RawMe
 	} else if res.JSON, err = json.Marshal(out); err != nil {
 		res.OK = false
 		res.JSON, _ = json.Marshal(map[string]string{"error": "result not serializable: " + err.Error()})
+	} else if sy, ok := out.(Sayer); ok {
+		res.Say = sy.Say()
 	}
 	if r.Log != nil {
 		r.Log(c, name, args, res.JSON, res.OK, time.Since(start))
 	}
 	return res
 }
+
+// Has reports whether a tool is registered.
+func (r *Registry) Has(name string) bool { return r.find(name) != nil }
 
 func (r *Registry) find(name string) *Tool {
 	for i := range r.tools {

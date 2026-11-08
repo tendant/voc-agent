@@ -130,3 +130,43 @@ func TestMessagesPersist(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestPrivacyLabels(t *testing.T) {
+	for rel, c := range map[string]struct{ body, want string }{
+		"private/health.md":       {"# Health", LocalOnly},
+		"work/private/salary.md":  {"x", LocalOnly},
+		"public/recipes.md":       {"x", Public},
+		"work/deploy.md":          {"x", Personal},
+		"work/secret.md":          {"---\ntitle: x\nprivacy: local_only\n---\nbody", LocalOnly},
+		"private/ok-to-share.md":  {"---\nprivacy: public\n---\n", Public},
+		"work/bad-frontmatter.md": {"---\nprivacy: banana\n---\n", Personal},
+	} {
+		if got := Privacy(rel, c.body); got != c.want {
+			t.Errorf("%s: %s, want %s", rel, got, c.want)
+		}
+	}
+	ctx := context.Background()
+	s := open(t)
+	dir := t.TempDir()
+	write(t, dir, "private/health.md", "# Health\nBlood pressure 128/82.")
+	write(t, dir, "work/deploy.md", "# Deploy\nCanary first.")
+	s.SyncNotes(ctx, dir)
+	lo, _ := s.NotesWithPrivacy(ctx, LocalOnly)
+	if len(lo) != 1 || lo[0].Path != "private/health.md" {
+		t.Fatalf("local_only notes: %+v", lo)
+	}
+	if rel, _ := s.RelevantNotes(ctx, "canary deploy", 2, 100); len(rel) != 1 || rel[0].Privacy != Personal {
+		t.Fatalf("relevant: %+v", rel)
+	}
+}
+
+func TestAudit(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	s.AddAudit(ctx, AuditEntry{TurnKey: "t", Decision: "denied", Destination: "api.anthropic.com", Model: "m", Reason: "r"})
+	s.AddAudit(ctx, AuditEntry{TurnKey: "t", Decision: "approved", Destination: "api.anthropic.com", Model: "m", Reason: "r", Sent: `{"a":1}`})
+	got, err := s.RecentAudit(ctx, 10)
+	if err != nil || len(got) != 2 || got[0].Decision != "approved" || got[0].Sent != `{"a":1}` || string(got[1].Policy) != "{}" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

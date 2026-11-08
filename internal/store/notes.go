@@ -49,7 +49,7 @@ func (s *Store) SyncNotes(ctx context.Context, dir string) (changed int, err err
 			return err
 		}
 		changed++
-		return s.UpsertNote(ctx, Note{Path: rel, Title: noteTitle(rel, string(b)), Body: string(b), MTime: mt})
+		return s.UpsertNote(ctx, Note{Path: rel, Title: noteTitle(rel, string(b)), Body: string(b), MTime: mt, Privacy: Privacy(rel, string(b))})
 	})
 	if err != nil {
 		return changed, err
@@ -91,4 +91,41 @@ func noteTitle(rel, body string) string {
 	}
 	base := strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
 	return strings.ReplaceAll(strings.ReplaceAll(base, "-", " "), "_", " ")
+}
+
+// Privacy labels.
+const (
+	Public    = "public"     // may be sent to the cloud as is
+	Personal  = "personal"   // may be sent after redaction, with approval
+	LocalOnly = "local_only" // never leaves this machine
+)
+
+// Privacy decides a note's label: a "privacy:" line in leading front matter
+// wins; otherwise notes under private/ are local_only, under public/ are
+// public, and everything else is personal.
+func Privacy(rel, body string) string {
+	if strings.HasPrefix(body, "---") {
+		lines := strings.Split(body, "\n")
+		for _, l := range lines[1:min(len(lines), 20)] {
+			l = strings.TrimSpace(l)
+			if l == "---" {
+				break
+			}
+			if v, ok := strings.CutPrefix(l, "privacy:"); ok {
+				switch v = strings.Trim(strings.TrimSpace(v), `"'`); v {
+				case Public, Personal, LocalOnly:
+					return v
+				case "private", "local", "local-only":
+					return LocalOnly
+				}
+			}
+		}
+	}
+	switch {
+	case strings.HasPrefix(rel, "private/") || strings.Contains(rel, "/private/"):
+		return LocalOnly
+	case strings.HasPrefix(rel, "public/"):
+		return Public
+	}
+	return Personal
 }

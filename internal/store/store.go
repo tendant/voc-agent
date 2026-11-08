@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -39,7 +40,32 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+	if err := reindexIfStale(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db, Now: time.Now}, nil
+}
+
+// noteIndexVersion bumps whenever indexing derives new fields from files
+// (v2: privacy labels). Older rows get mtime=0 so the next sync re-reads them.
+const noteIndexVersion = "2"
+
+func reindexIfStale(db *sql.DB) error {
+	var v string
+	err := db.QueryRow(`SELECT value FROM meta WHERE key='note_index_version'`).Scan(&v)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if v == noteIndexVersion {
+		return nil
+	}
+	if _, err := db.Exec(`UPDATE notes SET mtime=0`); err != nil {
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO meta(key, value) VALUES('note_index_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, noteIndexVersion)
+	return err
 }
 
 func sep(dsn string) string {
@@ -56,6 +82,7 @@ func (s *Store) Close() error { return s.db.Close() }
 type Note struct {
 	Path, Title, Body string
 	MTime             int64
+	Privacy           string // see Privacy; defaults to Personal
 }
 
 // NoteMTimes returns path → mtime for every indexed note.
@@ -78,10 +105,13 @@ func (s *Store) NoteMTimes(ctx context.Context) (map[string]int64, error) {
 }
 
 func (s *Store) UpsertNote(ctx context.Context, n Note) error {
+	if n.Privacy == "" {
+		n.Privacy = Personal
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO notes(path, title, body, mtime) VALUES(?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET title=excluded.title, body=excluded.body, mtime=excluded.mtime`,
-		n.Path, n.Title, n.Body, n.MTime)
+		INSERT INTO notes(path, title, body, mtime, privacy) VALUES(?,?,?,?,?)
+		ON CONFLICT(path) DO UPDATE SET title=excluded.title, body=excluded.body, mtime=excluded.mtime, privacy=excluded.privacy`,
+		n.Path, n.Title, n.Body, n.MTime, n.Privacy)
 	return err
 }
 
@@ -181,6 +211,17 @@ func (s *Store) RelevantNotes(ctx context.Context, text string, limit, maxChars 
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// QueryTerms returns the search terms ftsQuery would use for text.
+func QueryTerms(text string) []string {
+	var out []string
+	for _, t := range strings.Split(ftsQuery(text), " OR ") {
+		if t = strings.TrimSuffix(strings.Trim(t, `"*`), `"`); t != "" {
+			out = append(out, strings.Trim(t, `"`))
+		}
+	}
+	return out
 }
 
 // ftsQuery turns free text into a safe FTS5 query: each word is quoted
@@ -352,4 +393,79 @@ func isSmallNumber(w string) bool {
 		}
 	}
 	return true
+}
+
+// NotesWithPrivacy returns full notes carrying the given label.
+func (s *Store) NotesWithPrivacy(ctx context.Context, privacy string) ([]RelevantNote, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path, title, body, privacy FROM notes WHERE privacy=? ORDER BY path`, privacy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RelevantNote
+	for rows.Next() {
+		var n RelevantNote
+		if err := rows.Scan(&n.Path, &n.Title, &n.Body, &n.Privacy); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// --- audit ---
+
+type AuditEntry struct {
+	ID          int64           `json:"id"`
+	Created     time.Time       `json:"created_at"`
+	TurnKey     string          `json:"turn_key"`
+	Decision    string          `json:"decision"`
+	Destination string          `json:"destination"`
+	Model       string          `json:"model"`
+	Reason      string          `json:"reason"`
+	Detail      string          `json:"detail,omitempty"`
+	Proposed    string          `json:"proposed,omitempty"`
+	Sent        string          `json:"sent,omitempty"`
+	SentSHA256  string          `json:"sent_sha256,omitempty"`
+	Response    string          `json:"response,omitempty"`
+	Policy      json.RawMessage `json:"policy"`
+}
+
+func (s *Store) AddAudit(ctx context.Context, e AuditEntry) (int64, error) {
+	if len(e.Policy) == 0 {
+		e.Policy = json.RawMessage("{}")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO audit(created_at, turn_key, decision, destination, model, reason, detail, proposed, sent, sent_sha256, response, policy)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		s.Now().Unix(), e.TurnKey, e.Decision, e.Destination, e.Model, e.Reason, e.Detail,
+		e.Proposed, e.Sent, e.SentSHA256, e.Response, string(e.Policy))
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// RecentAudit returns the newest entries first.
+func (s *Store) RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, created_at, turn_key, decision, destination, model, reason, detail, proposed, sent, sent_sha256, response, policy
+		FROM audit ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var created int64
+		var pol string
+		if err := rows.Scan(&e.ID, &created, &e.TurnKey, &e.Decision, &e.Destination, &e.Model, &e.Reason,
+			&e.Detail, &e.Proposed, &e.Sent, &e.SentSHA256, &e.Response, &pol); err != nil {
+			return nil, err
+		}
+		e.Created, e.Policy = time.Unix(created, 0), json.RawMessage(pol)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

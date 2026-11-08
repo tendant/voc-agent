@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Mic, Player } from './audio'
+import { ApprovalDialog, type ApprovalRequest } from './Approval'
+import { AuditLog } from './Audit'
 
 type Line = {
   key: string
@@ -39,6 +41,10 @@ function describeTool(name: string, args: any, result: any, ok?: boolean): strin
       return `Reminder ${result?.status === 'already_exists' ? 'already existed' : 'created'}: “${result?.reminder?.text}”, ${result?.reminder?.due}`
     case 'list_reminders':
       return `Listed ${result?.count ?? 0} upcoming reminder(s)`
+    case 'ask_cloud':
+      if (result?.status === 'answered') return `Cloud answered (${result?.model})`
+      if (result?.status === 'blocked') return 'Blocked by privacy policy — nothing was sent'
+      return 'Cloud request not sent'
   }
   return `${name} ${JSON.stringify(args)}`
 }
@@ -67,6 +73,11 @@ export default function App() {
   const scroller = useRef<HTMLElement>(null)
   const [reminders, setReminders] = useState<Reminder[]>([])
   const pendingArgs = useRef<Record<string, unknown>>({})
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null)
+  const approvalRef = useRef<ApprovalRequest | null>(null)
+  approvalRef.current = approval
+  const [auditTick, setAuditTick] = useState(0)
+  const [cloud, setCloud] = useState<{ enabled: boolean; model?: string; destination?: string; why?: string } | null>(null)
 
   const loadReminders = useCallback(() => {
     fetch('/api/reminders')
@@ -152,7 +163,16 @@ export default function App() {
         case 'guard':
           add({ who: 'tool', text: `Guard: ${m.text}`, ok: false })
           break
+        case 'approval_request':
+          setApproval(m.result as ApprovalRequest)
+          break
+        case 'approval_resolved':
+          setApproval(null)
+          add({ who: 'tool', text: m.ok ? 'Cloud request approved and sent' : 'Cloud request cancelled — nothing was sent', ok: m.ok })
+          setAuditTick((n) => n + 1)
+          break
       }
+      if (m.type === 'tool_result' && m.name === 'ask_cloud') setAuditTick((n) => n + 1)
     }
     const connect = () => {
       const s = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`)
@@ -161,6 +181,10 @@ export default function App() {
         busy.current = false
         setStatus('ready')
         loadReminders()
+        fetch('/api/status')
+          .then((r) => r.json())
+          .then((x) => setCloud(x.cloud))
+          .catch(() => {})
       }
       s.onclose = () => {
         setStatus('offline')
@@ -199,8 +223,17 @@ export default function App() {
 
   /** Stops the current turn's output locally; the server cancels it too. */
   const interrupt = () => {
+    if (approvalRef.current) {
+      getPlayer().stop() // answering an approval: keep the turn, silence the prompt
+      return
+    }
     turn.current = 0
     getPlayer().stop()
+  }
+
+  const decide = (approve: boolean) => {
+    if (!approval) return
+    send({ type: approve ? 'approve' : 'deny', id: approval.id })
   }
 
   const down = useCallback(async () => {
@@ -274,7 +307,13 @@ export default function App() {
         <h1>voc</h1>
         <span className={`dot ${status}`} aria-hidden />
         <span className="muted">{status}</span>
+        {cloud && (
+          <span className={`cloud ${cloud.enabled ? 'on' : 'off'}`} title={cloud.enabled ? `${cloud.model} via ${cloud.destination}` : cloud.why}>
+            {cloud.enabled ? 'cloud: ask first' : 'local only'}
+          </span>
+        )}
       </header>
+      {approval && <ApprovalDialog req={approval} onDecide={decide} />}
 
       <section className="transcript" aria-live="polite" ref={scroller}>
         {lines.length === 0 && <p className="muted">Hold the button (or the space bar) and speak, or type below.</p>}
@@ -324,6 +363,8 @@ export default function App() {
           </ul>
         </section>
       )}
+
+      <AuditLog refresh={auditTick} />
 
       <footer className="timing" title="Milliseconds after you finished speaking">
         {STAGES.filter((k) => k in timing).map((k) => (

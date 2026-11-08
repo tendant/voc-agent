@@ -44,10 +44,20 @@ type Server struct {
 	OnConnect func()         // e.g. wake the reminder scheduler
 	Static    http.Handler   // built web UI; nil in dev (Vite serves it)
 	Log       *slog.Logger
+	Cloud     CloudStatus // reported by /api/status
 
-	turns   atomic.Uint32
-	mu      sync.Mutex
-	clients map[*websocket.Conn]wsSink
+	turns     atomic.Uint32
+	mu        sync.Mutex
+	clients   map[*websocket.Conn]wsSink
+	approvals map[string]*pendingApproval
+}
+
+// CloudStatus describes cloud escalation for the UI.
+type CloudStatus struct {
+	Enabled     bool   `json:"enabled"`
+	Model       string `json:"model,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Why         string `json:"why,omitempty"` // when disabled
 }
 
 func (s *Server) Handler() http.Handler {
@@ -55,6 +65,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /ws", s.handleWS)
 	mux.HandleFunc("GET /api/reminders", s.handleReminders)
+	mux.HandleFunc("GET /api/audit", s.handleAudit)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
 	if s.Static != nil {
 		mux.Handle("/", s.Static)
 	}
@@ -64,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 type upMsg struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+	ID   string `json:"id"` // approve / deny
 }
 
 // maxUtterance caps buffered audio per push-to-talk press (60 s).
@@ -151,19 +164,55 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			sink.Event(agent.Event{Type: "error", Error: "bad json"})
 			continue
 		}
+		// While an approval is pending, the next utterance answers it.
+		// "approve"/"cancel" resolve it; anything else cancels it and starts
+		// a new turn.
+		answer := func(text string) (handled bool) {
+			p := s.pending()
+			if p == nil {
+				return false
+			}
+			if ok, decided := voiceDecision(text); decided {
+				s.resolve(p.id, ok)
+				return true
+			}
+			s.resolve(p.id, false)
+			return false
+		}
 		switch m.Type {
 		case "ptt_start":
-			stopTurn() // talking over the assistant interrupts it
+			if s.pending() == nil {
+				stopTurn() // talking over the assistant interrupts it
+			}
 			buf, recording = nil, true
 		case "ptt_end":
 			recording = false
-			if len(buf) >= 2 {
-				startTurn(buf, "")
-			}
+			pcm := buf
 			buf = nil
+			if len(pcm) < 2 {
+				continue
+			}
+			if p := s.pending(); p != nil {
+				tr, _, err := s.transcribe(pcm)
+				if err != nil {
+					sink.Event(agent.Event{Type: "error", Error: err.Error()})
+					continue
+				}
+				sink.Event(agent.Event{Type: "transcript", Turn: p.turn, Final: true, Text: tr.Text, Lang: tr.Lang})
+				if tr.Text == "" || answer(tr.Text) {
+					continue
+				}
+				startTurn(nil, tr.Text)
+				continue
+			}
+			startTurn(pcm, "")
 		case "text":
-			if t := strings.TrimSpace(m.Text); t != "" {
+			if t := strings.TrimSpace(m.Text); t != "" && !answer(t) {
 				startTurn(nil, t)
+			}
+		case "approve", "deny":
+			if !s.resolve(m.ID, m.Type == "approve") {
+				sink.Event(agent.Event{Type: "error", Error: "no pending approval " + m.ID})
 			}
 		default:
 			sink.Event(agent.Event{Type: "error", Error: "unknown type " + m.Type})

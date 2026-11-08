@@ -9,5 +9,5 @@ Checklist:
 - Rollback: redeploy the previous image tag and run `0042_down`. The down migration is safe because the new column is nullable.
 
 Open questions:
-- Priya still needs to confirm the Stripe webhook secret was rotated.
+- Priya (priya.k@example.com) still needs to confirm the Stripe webhook secret was rotated.
 - Ask the on-call to silence the "invoice lag" alert during the migration.

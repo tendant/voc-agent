@@ -50,3 +50,22 @@ CREATE TABLE IF NOT EXISTS messages (
   content    TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+-- Every cloud escalation decision, with the exact bytes that left the machine.
+CREATE TABLE IF NOT EXISTS audit (
+  id          INTEGER PRIMARY KEY,
+  created_at  INTEGER NOT NULL,
+  turn_key    TEXT NOT NULL,
+  decision    TEXT NOT NULL,          -- approved | denied | blocked | disabled | error
+  destination TEXT NOT NULL,
+  model       TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  detail      TEXT NOT NULL DEFAULT '', -- why blocked/denied/failed
+  proposed    TEXT NOT NULL DEFAULT '', -- request body shown for approval
+  sent        TEXT NOT NULL DEFAULT '', -- request body actually transmitted ('' if nothing left)
+  sent_sha256 TEXT NOT NULL DEFAULT '',
+  response    TEXT NOT NULL DEFAULT '',
+  policy      TEXT NOT NULL DEFAULT '{}' -- included/excluded sources and redactions
+);
+
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
