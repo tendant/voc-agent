@@ -1,0 +1,6 @@
+models/
+web/node_modules/
+web/dist/
+bin/
+*.db
+.env
