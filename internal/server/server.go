@@ -342,7 +342,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if tr.Text == "" {
 			return
 		}
-		startTurn(nil, "", &heardUtterance{tr: tr, ms: ms, start: start})
+		startTurn(nil, "", &heardUtterance{tr: tr, ms: ms, start: start, handsFree: handsFree})
 	}
 
 	for {
@@ -434,9 +434,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 // heardUtterance is speech already transcribed before its turn started.
 type heardUtterance struct {
-	tr    voice.Transcript
-	ms    map[string]int
-	start time.Time
+	tr        voice.Transcript
+	ms        map[string]int
+	start     time.Time
+	handsFree bool
 }
 
 // While media plays in voc's browser, hands-free only accepts these, or
@@ -584,6 +585,14 @@ func (s *Server) handleReminders(w http.ResponseWriter, r *http.Request) {
 // agent turn.
 func (s *Server) runTurn(ctx context.Context, turn uint32, pcm []byte, text string, heard *heardUtterance, sink agent.Sink, log *slog.Logger) {
 	start := time.Now()
+	switch { // tell the agent how the request arrived
+	case heard != nil && heard.handsFree:
+		ctx = agent.WithInputMode(ctx, agent.ModeHandsFree)
+	case pcm != nil || heard != nil:
+		ctx = agent.WithInputMode(ctx, agent.ModeVoice)
+	default:
+		ctx = agent.WithInputMode(ctx, agent.ModeTyped)
+	}
 	sink.Event(agent.Event{Type: "turn_start", Turn: turn})
 	if heard != nil {
 		start, text = heard.start, heard.tr.Text

@@ -28,7 +28,7 @@ type echoLLM struct{ delay time.Duration }
 
 func (e echoLLM) Chat(ctx context.Context, req llm.Request, on func(string)) (llm.Message, error) {
 	msgs := req.Messages
-	words := strings.Fields("You said: " + msgs[len(msgs)-1].Content)
+	words := strings.Fields("You said: " + agent.UserText(msgs[len(msgs)-1].Content))
 	var b strings.Builder
 	for _, w := range words {
 		select {
@@ -163,7 +163,7 @@ func TestInterrupt(t *testing.T) {
 		t.Fatalf("turn 1 should end interrupted first: %+v", evs)
 	}
 	h := sess.History()
-	if len(h) != 4 || !strings.HasSuffix(h[1].Content, "[interrupted]") || h[2].Content != "stop" {
+	if len(h) != 4 || !strings.HasSuffix(h[1].Content, "[interrupted]") || agent.UserText(h[2].Content) != "stop" {
 		t.Fatalf("history: %+v", h)
 	}
 }

@@ -373,6 +373,44 @@ Planner comparison on 4 live goals:
   and in the live run two Maya-goal requests that would have carried
   local-only text fell back.
 
+### Post-MVP: per-turn situation context — ✅ 2026-11-08
+
+Each request now tells the model what's true right now:
+- the time
+- how the user is talking (typed, push-to-talk, hands-free; voice may contain
+  recognition errors)
+- the page open in voc's browser, and whether media plays there or in Music
+- the next 3 reminders, as "in 2 hours, Mon 9 PM"
+- an unfinished task
+- whether the cloud is available
+
+It's gathered under a 300 ms budget, never launches the browser or Music, and
+stops asking Music if macOS denies permission. Live: 6/6 situation questions
+across runs ("what am I watching?", "is anything paused in Music?", "was I
+in the middle of something?").
+
+Prompt caching, measured with the real tool definitions: with tools present,
+the chat template moves any system message up into the top block. So the
+old clock in the system prompt (changing every minute), the separate
+recalled-notes message, and the first version of the situation message all
+forced a full re-read of about 1,400 tokens (~0.85–1.4 s) per model round.
+Now:
+- The system prompt is static.
+- The turn's context (situation plus recalled notes) goes inside the user
+  message, which is kept in history exactly as sent.
+- The tool list is identical across rounds.
+- History is trimmed in big cuts (to half) instead of every turn.
+
+Voice rehearsal: first audio mean 1.55 s / 1.71 s (later turns 0.9–1.4 s),
+against 8.5 s with the first version and ~2.4 s before this change.
+
+Privacy follow-up the live tests caught: with notes inside the user message,
+Qwen3 paraphrased a local-only health note into a cloud question ("right ACL
+surgery on September 30… no running until March"). Now 2 or more words found
+only in local-only notes (not counting the user's own words) block the first
+attempt, and the model must rephrase. Live: blocked, rephrased, nothing
+private sent.
+
 ## WebSocket protocol
 
 | Direction | Message |

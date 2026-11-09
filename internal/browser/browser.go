@@ -347,8 +347,11 @@ func (b *Browser) Click(ctx context.Context, text string) (Clicked, error) {
 			const label = (el.innerText || el.getAttribute('aria-label') || el.value || el.title || '').trim().replace(/\s+/g, ' ');
 			if (!label) continue;
 			const l = label.toLowerCase();
-			const score = l === want ? 3 : l.startsWith(want) ? 2 : l.includes(want) ? 1 : 0;
-			if (score > bestScore || (score === bestScore && best && label.length < best.label.length)) {
+			// Exact > starts with > contains; last resort, the label is inside a
+			// longer request ("next recipe buy now" → "Next recipe").
+			const score = l === want ? 3 : l.startsWith(want) ? 2 : l.includes(want) ? 1 :
+				(l.length >= 4 && want.includes(l) && !risky.test(label)) ? 0.5 + l.length / 1000 : 0;
+			if (score > bestScore || (score === bestScore && score >= 1 && best && label.length < best.label.length)) {
 				if (score) { best = {el, label}; bestScore = score; }
 			}
 		}

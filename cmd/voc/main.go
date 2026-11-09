@@ -144,6 +144,7 @@ func main() {
 	}
 	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st), Tasks: st}
 	setupPlanner(sess, *plannerMode, *cloudModel, ol, st, log)
+	sess.Situation = situationFacts(st, agentB, music, cl != nil)
 	if n, err := st.MarkInterrupted(ctx); err == nil && n > 0 {
 		log.Info("tasks cut off by the last shutdown; say \"continue my last task\" to resume", "count", n)
 	}

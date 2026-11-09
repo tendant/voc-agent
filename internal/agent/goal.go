@@ -77,15 +77,16 @@ type goalCall struct {
 
 // goalEnv is what a goal run needs from the turn it runs in.
 type goalEnv struct {
-	ctx    context.Context
-	turn   uint32
-	sink   Sink
-	user   string
-	notes  string                             // recalled local notes, as context
-	say    func(sentences []string) string    // speak (claim-checked)
-	run    func(tc llm.ToolCall) tools.Result // run a tool through the guards
-	setKey func(key string)                   // idempotency key for following calls
-	ok     func() map[string]bool             // tools that succeeded so far
+	ctx       context.Context
+	turn      uint32
+	sink      Sink
+	user      string
+	notes     string                             // recalled local notes, as context
+	situation string                             // what's open, playing, coming up
+	say       func(sentences []string) string    // speak (claim-checked)
+	run       func(tc llm.ToolCall) tools.Result // run a tool through the guards
+	setKey    func(key string)                   // idempotency key for following calls
+	ok        func() map[string]bool             // tools that succeeded so far
 }
 
 func (s *Session) goalsEnabled() bool { return s.Tasks != nil && s.Tools != nil }
@@ -375,6 +376,9 @@ func (s *Session) plan(ctx context.Context, env goalEnv, goal string, done *goal
 		"required":["can_do","summary","steps"]}`, maxGoalSteps, enum))
 
 	user := "Goal: " + goal
+	if env.situation != "" {
+		user += "\n\n" + env.situation
+	}
 	if env.notes != "" {
 		user += "\n\nNotes from the user's files that may help:\n" + env.notes
 	}
@@ -454,7 +458,11 @@ func (s *Session) fillArgs(ctx context.Context, env goalEnv, goal string, plan g
 		return nil, fmt.Errorf("%s isn't available right now", st.Tool)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Goal: %s\n\nPlan:\n", goal)
+	fmt.Fprintf(&b, "Goal: %s\n\n", goal)
+	if env.situation != "" {
+		fmt.Fprintf(&b, "%s\n\n", env.situation)
+	}
+	b.WriteString("Plan:\n")
 	for j, p := range plan.Steps {
 		mark := "  "
 		if j == i {

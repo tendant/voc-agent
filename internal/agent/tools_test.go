@@ -365,12 +365,14 @@ func TestTaintBlocksExfiltration(t *testing.T) {
 func TestMediaClaims(t *testing.T) {
 	none := map[string]bool{}
 	for s, want := range map[string]string{
-		"I've paused the video.":            "youtube_play",
-		"Now playing lo-fi jazz beats.":     "youtube_play",
-		"The video is now playing.":         "youtube_play",
-		"I clicked the Next page link.":     "youtube_play",
-		"Do you want me to pause it?":       "",
-		"That video is about jazz history.": "",
+		"I've paused the video.":                     "youtube_play",
+		"Now playing lo-fi jazz beats.":              "youtube_play",
+		"The video is now playing.":                  "youtube_play",
+		"I clicked the Next page link.":              "youtube_play",
+		"Do you want me to pause it?":                "",
+		"That video is about jazz history.":          "",
+		"So What by Miles Davis is paused in Music.": "", // describing the situation
+		"The video is playing in your browser.":      "",
 	} {
 		if got := unbackedClaim(s, none); got != want {
 			t.Errorf("%q: %q want %q", s, got, want)

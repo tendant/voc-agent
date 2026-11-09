@@ -36,7 +36,7 @@ func escalationSetup(t *testing.T) (*store.Store, *cloud.FakeAPI, *Registry) {
 func TestEscalateApproved(t *testing.T) {
 	st, f, r := escalationSetup(t)
 	var shown ApprovalRequest
-	call := Call{TurnKey: "t1", Approve: func(_ context.Context, req ApprovalRequest) (bool, error) {
+	call := Call{TurnKey: "t1", UserText: "review my canary deploy plan and my knee surgery recovery", Approve: func(_ context.Context, req ApprovalRequest) (bool, error) {
 		shown = req
 		return true, nil
 	}}
@@ -108,5 +108,22 @@ func TestEscalateBlocksCopiedPrivateText(t *testing.T) {
 	}
 	if !strings.Contains(string(shown.Policy), `"warnings":["knee","march","running","surgery"]`) {
 		t.Fatalf("paraphrase not flagged: %s", shown.Policy)
+	}
+}
+
+func TestEscalateBlocksParaphraseOnce(t *testing.T) {
+	_, f, r := escalationSetup(t)
+	asked := 0
+	call := Call{TurnKey: "p1", UserText: "make me a workout plan", Approve: func(context.Context, ApprovalRequest) (bool, error) { asked++; return true, nil }}
+	// Paraphrased private details: no 6-word copy, but several private-only words.
+	para := json.RawMessage(`{"question":"Plan workouts given knee surgery recovery with therapy twice weekly and no running until March","reason":"r"}`)
+	res := r.Run(context.Background(), call, "ask_cloud", para)
+	if res.OK || !strings.Contains(string(res.JSON), "local-only notes") || asked != 0 || len(f.Requests()) != 0 {
+		t.Fatalf("paraphrase should be pushed back first: %s", res.JSON)
+	}
+	// A general rephrasing goes to approval.
+	res = r.Run(context.Background(), call, "ask_cloud", json.RawMessage(`{"question":"What are good low-impact weekly workouts?","reason":"r"}`))
+	if !res.OK || asked != 1 {
+		t.Fatalf("general question: %s", res.JSON)
 	}
 }

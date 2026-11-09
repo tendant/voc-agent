@@ -22,6 +22,9 @@ type Call struct {
 	// tools derive idempotency keys from it so a retried call in the same turn
 	// doesn't act twice.
 	TurnKey string
+	// UserText is what the user said this turn. Privacy checks don't count
+	// the user's own words against them.
+	UserText string
 	// Approve asks the user to allow an action and blocks until they answer.
 	// Nil means approvals are unavailable, which tools must treat as "no".
 	Approve func(ctx context.Context, req ApprovalRequest) (bool, error)

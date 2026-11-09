@@ -75,3 +75,18 @@ var common = func() map[string]bool {
 	}
 	return m
 }()
+
+// Except drops words the user said themselves this turn.
+func (d Distinctive) Except(found []string, userText string) []string {
+	said := map[string]bool{}
+	for _, w := range normWords(userText) {
+		said[w] = true
+	}
+	var out []string
+	for _, w := range found {
+		if !said[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}

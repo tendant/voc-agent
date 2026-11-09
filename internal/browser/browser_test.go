@@ -68,6 +68,11 @@ func TestReadClickRefuse(t *testing.T) {
 	if _, err := b.Click(ctx, "no such thing"); err == nil {
 		t.Fatal("missing element should error")
 	}
+	// A request that runs two labels together still finds the safe one.
+	if c, err := b.Click(ctx, "about us buy now"); err != nil || c.Label != "About us" {
+		t.Fatalf("contained label: %+v %v", c, err)
+	}
+	b.Navigate(ctx, url)
 	c, err := b.Click(ctx, "next")
 	if err != nil || c.Label != "Next page" || !strings.HasSuffix(c.URL, "/next") {
 		t.Fatalf("click: %+v %v", c, err)

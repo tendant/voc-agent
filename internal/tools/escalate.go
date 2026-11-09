@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,9 +79,26 @@ func Escalate(st *store.Store, c *cloud.Claude) Tool {
 				}
 				others = append(others, ns...)
 			}
-			plan.Warnings = policy.NewDistinctive(private, others).Find(plan.User)
+			dist := policy.NewDistinctive(private, others)
+			plan.Warnings = dist.Except(dist.Find(plan.User), call.UserText) // the user's own words aren't a leak
 			audit.Policy = plan.JSON()
 			fp := policy.NewFingerprints(private)
+			// Paraphrase isn't caught by fingerprints ("right ACL surgery on
+			// September 30" for a note that says "right ACL, operated September
+			// 30"). Two or more words found only in local-only notes get the
+			// same first response as a copy: nothing is sent and the model must
+			// rephrase. If it still uses them, they stay flagged in the dialog.
+			mu.Lock()
+			firstTry := blocked[call.TurnKey] == 0
+			mu.Unlock()
+			if firstTry && len(plan.Warnings) >= 2 {
+				record("blocked", "mentions details found only in local-only notes: "+strings.Join(plan.Warnings, ", "))
+				mu.Lock()
+				blocked[call.TurnKey]++
+				mu.Unlock()
+				return nil, fmt.Errorf("blocked by privacy policy, nothing was sent: the question mentions details from the user's local-only notes (%s). "+
+					"Call ask_cloud again with a general question that leaves out the user's private details (no conditions, dates, medications, names or schedules from their notes)", strings.Join(plan.Warnings, ", "))
+			}
 			if err := fp.CheckOutbound(body); err != nil {
 				record("blocked", err.Error())
 				mu.Lock()

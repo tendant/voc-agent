@@ -210,3 +210,26 @@ func (b *Browser) OpenResult(ctx context.Context, n int) (Result, error) {
 	}
 	return Result{N: n, Title: f.Title, URL: f.URL}, nil
 }
+
+// Where reports the open page's title and URL, without starting the browser.
+func (b *Browser) Where(ctx context.Context) (title, url string, ok bool) {
+	b.mu.Lock()
+	tab := b.tab
+	b.mu.Unlock()
+	if tab == nil || tab.Err() != nil {
+		return "", "", false
+	}
+	tctx, cancel := context.WithTimeout(tab, 300*time.Millisecond)
+	defer cancel()
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	type where struct {
+		Title string `json:"title"`
+		URL   string `json:"url"`
+	}
+	w, err := chromedp.Run(tctx, chromedp.Evaluate[where](`({title: document.title, url: location.href})`))
+	if err != nil || w.URL == "" || w.URL == "about:blank" {
+		return "", "", false
+	}
+	return w.Title, w.URL, true
+}
