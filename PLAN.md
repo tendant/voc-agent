@@ -266,9 +266,29 @@ as starting a little late, so the first word was clipped ("Stop listening"
 → "listening", "Ask the cloud" → "the cloud"). Utterances now start 0.3 s
 before the detected onset and end 0.2 s after.
 
-Not done: a wake word (sherpa-onnx has keyword spotting), barge-in (talking
-over voc needs echo cancellation that can be trusted), and auto-off after
-idle time.
+Follow-up, sleep and wake word: hands-free falls asleep after 10 s of
+listening without the user talking. Only "Hey Victor" wakes it, alone
+("Yes?") or with a request in the same breath. "Go to sleep" sleeps it
+immediately.
+- **Choosing the word (Piper takes through SenseVoice):** "voc" and "vox"
+  mostly came out as "Hey, O" or "Hey, Fox". Violet scored 8/8, Victor 36/40.
+  The user chose Victor.
+- **Audio clock:** the timer counts mic samples, not wall time. The browser
+  sends none while voc speaks, so long answers don't eat into the 10 s.
+  Speech that began just before the sleep moment is still heard.
+- **Fixes found by the stream test:**
+  - A comma pause can split "Hey Victor, what time is it" into two
+    segments. The short "Hey Victor" segment was then re-trimmed into
+    nothing, so hands-free segments are no longer re-trimmed.
+  - The voice detector sometimes skips a short "Hey Victor" entirely.
+    While asleep, an utterance without the wake word is re-transcribed with
+    the 1.5 s before it, and the minimum speech length dropped from 0.3 s to
+    0.2 s.
+  - The test went from 9/12 to 15/15.
+
+Still not done: barge-in (talking over voc needs echo cancellation that can
+be trusted), and a dedicated keyword-spotting model (would avoid
+transcribing room speech while asleep).
 
 ### Post-MVP: browser agent (page actions) — ✅ 2026-11-08
 

@@ -96,9 +96,13 @@ mic streams continuously and the server ends an utterance after about 0.7 s
 of silence. Say "stop listening" (or click again) to turn it off.
 - **Half-duplex:** voc doesn't hear you while it is talking (the mic is muted
   during its speech plus 0.35 s), so you can't talk over it yet.
-- **No wake word:** anything said near the mic is processed. Noise, empty
-  transcripts and filler ("um", "hmm") are ignored, but conversation in the
-  room will get answers. Audio never leaves the machine.
+- **Falls asleep after 10 s without you talking.** Then only **"Hey
+  Victor"** wakes it ("Yes?"), or say it in one breath: "Hey Victor, what
+  time is it?". The countdown pauses while voc is thinking or talking.
+  "Go to sleep" sleeps it right away; "stop listening" turns hands-free off.
+  `-wake-word` and `-sleep-after` change these (`-sleep-after=0` never sleeps).
+- While asleep, nothing is answered; transcripts are only checked for the
+  wake word, locally. Noise and filler ("um", "hmm") are always ignored.
 - Push-to-talk (button or space bar) still works while it is on.
 
 Notes are the Markdown/text files under `./notes` (sample notes included;

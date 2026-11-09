@@ -19,6 +19,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -56,9 +57,14 @@ type Server struct {
 	// reaches the mic, so hands-free then accepts only media commands (or
 	// anything starting with "hey voc"). May be nil.
 	MediaPlaying func() bool
-	Static       http.Handler // built web UI; nil in dev (Vite serves it)
-	Log          *slog.Logger
-	Cloud        CloudStatus // reported by /api/status
+	// WakeWord wakes hands-free listening after it has gone to sleep
+	// (DefaultWakeWord if empty). SleepAfter is how much listening time
+	// without the user talking puts it to sleep; 0 means never.
+	WakeWord   string
+	SleepAfter time.Duration
+	Static     http.Handler // built web UI; nil in dev (Vite serves it)
+	Log        *slog.Logger
+	Cloud      CloudStatus // reported by /api/status
 
 	turns     atomic.Uint32
 	mu        sync.Mutex
@@ -139,7 +145,51 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		done      chan struct{}
 		seg       voice.Segmenter // hands-free; nil when off
 		speaking  bool
+		awake     = true // hands-free: false = only the wake word is heard
+		// idle counts mic samples since the user last spoke or voc last
+		// finished. It is an audio clock: the browser sends no mic audio
+		// while voc talks, so the countdown pauses during replies.
+		idle int
+		// pos is the hands-free stream position in samples; sleptAt is where
+		// it fell asleep, so speech that began before that still counts.
+		pos, sleptAt int
+		// recent is the last few seconds of hands-free audio, so a wake word
+		// the voice detector skipped can still be found while asleep.
+		recent []byte
 	)
+	const lookBack = 3 * voice.SampleRate / 2 // 1.5 s before an utterance
+	wake := cmp.Or(s.WakeWord, DefaultWakeWord)
+	setAwake := func(a bool) {
+		idle = 0
+		if a == awake {
+			return
+		}
+		awake = a
+		if !a {
+			sleptAt = pos
+		}
+		state := map[bool]string{true: "awake", false: "asleep"}[a]
+		sink.Event(agent.Event{Type: "listen_state", Text: state, Name: wake})
+		log.Info("hands-free", "state", state)
+	}
+	turnBusy := func() bool {
+		if cancel == nil {
+			return false
+		}
+		select {
+		case <-done:
+			return false
+		default:
+			return true
+		}
+	}
+	sayNotice := func(text string) {
+		if s.TTS != nil {
+			if a, err := s.TTS.Synthesize(text); err == nil {
+				sink.Audio(NotifyTurn, a)
+			}
+		}
+	}
 	defer func() {
 		if seg != nil {
 			seg.Close()
@@ -212,7 +262,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		start := time.Now()
-		tr, ms, err := s.transcribe(pcm)
+		// Hands-free segments are already trimmed (with pre-roll) by the
+		// segmenter; trimming again can drop a short "Hey Victor".
+		tr, ms, err := s.transcribe(pcm, !handsFree)
 		if err != nil {
 			sink.Event(agent.Event{Type: "error", Error: err.Error()})
 			return
@@ -227,16 +279,58 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				stopListening(true)
 				return
 			}
-			if s.MediaPlaying != nil && s.MediaPlaying() {
-				n := normalize(tr.Text)
-				if rest, ok := strings.CutPrefix(n, ""); ok && wakeRe.MatchString(rest) {
-					tr.Text = strings.TrimSpace(wakeRe.ReplaceAllString(rest, ""))
-				} else if !mediaCommandRe.MatchString(n) {
-					// Probably the video talking, not the user.
-					sink.Event(agent.Event{Type: "ignored", Text: tr.Text, Error: "media is playing: say a media command or start with \"hey voc\""})
-					return
+			rest, woke := wakeMatch(wake, tr.Text)
+			// An utterance that started before voc fell asleep (it fell
+			// asleep while the user was starting to talk) is still heard.
+			began := pos - len(pcm)/2 - int(voice.SegmentSilence*voice.SampleRate)
+			if !awake && !woke && began < sleptAt {
+				setAwake(true)
+			}
+			if !awake && !woke {
+				// "Hey Victor" may have been too short for the voice detector
+				// and left out of the segment: listen again with the moments
+				// just before it.
+				if n := len(pcm) + 2*lookBack + 2*int(voice.SegmentSilence*voice.SampleRate); len(recent) > len(pcm) {
+					wide := recent[max(0, len(recent)-n):]
+					if wtr, _, err := s.transcribe(wide, false); err == nil {
+						if r, ok := wakeFind(wake, wtr.Text); ok {
+							rest, woke = r, true
+						}
+					}
 				}
 			}
+			if !awake {
+				if !woke {
+					sink.Event(agent.Event{Type: "ignored", Text: tr.Text, Error: "asleep: say \"Hey " + wake + "\""})
+					return
+				}
+				setAwake(true)
+				if isNoise(rest) {
+					sink.Event(agent.Event{Type: "transcript", Final: true, Text: tr.Text, Lang: tr.Lang})
+					sayNotice("Yes?")
+					return
+				}
+				tr.Text = rest // "Hey Victor, what time is it?" in one breath
+			} else if woke {
+				if isNoise(rest) {
+					sayNotice("Yes?")
+					idle = 0
+					return
+				}
+				tr.Text = rest
+			}
+			if goToSleepRe.MatchString(normalize(tr.Text)) {
+				sink.Event(agent.Event{Type: "transcript", Final: true, Text: tr.Text, Lang: tr.Lang})
+				setAwake(false)
+				sayNotice("Okay. Say hey " + wake + " when you need me.")
+				return
+			}
+			if s.MediaPlaying != nil && s.MediaPlaying() && !woke && !mediaCommandRe.MatchString(normalize(tr.Text)) {
+				// Probably the video talking, not the user.
+				sink.Event(agent.Event{Type: "ignored", Text: tr.Text, Error: "media is playing: say a media command or start with \"Hey " + wake + "\""})
+				return
+			}
+			idle = 0
 		}
 		if p != nil {
 			sink.Event(agent.Event{Type: "transcript", Turn: p.turn, Final: true, Text: tr.Text, Lang: tr.Lang})
@@ -264,8 +358,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				buf = append(buf, data...)
 			}
 			if seg != nil && !recording {
+				pos += len(data) / 2
+				recent = append(recent, data...)
+				if keep := 2 * 12 * voice.SampleRate; len(recent) > keep { // 12 s
+					recent = append([]byte(nil), recent[len(recent)-keep:]...)
+				}
 				for _, u := range seg.Accept(voice.PCM16ToFloat(data)) {
 					utterance(voice.FloatToPCM16(u), true)
+				}
+				// Sleep after SleepAfter of listening with nothing going on.
+				if seg != nil && awake && s.SleepAfter > 0 {
+					if turnBusy() || s.pending() != nil || seg.Speaking() {
+						idle = 0
+					} else if idle += len(data) / 2; idle > int(s.SleepAfter.Seconds()*voice.SampleRate) {
+						setAwake(false)
+					}
 				}
 				if seg != nil && seg.Speaking() != speaking {
 					speaking = seg.Speaking()
@@ -303,8 +410,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				if seg, err = s.NewSegmenter(); err != nil {
 					seg = nil
 					sink.Event(agent.Event{Type: "error", Error: err.Error()})
+					continue
 				}
 			}
+			awake = false // force the event: turning it on starts awake
+			setAwake(true)
 		case "listen_stop":
 			stopListening(false)
 		case "text":
@@ -329,10 +439,9 @@ type heardUtterance struct {
 }
 
 // While media plays in voc's browser, hands-free only accepts these, or
-// anything after "hey voc".
+// anything after the wake word.
 var (
 	mediaCommandRe = regexp.MustCompile(`^(please )?(pause|stop|play|resume|continue|next|skip|mute|unmute|louder|quieter|softer|volume (up|down)|turn (it )?(up|down)|go back|go forward|back|forward|rewind|fast forward|restart|start over|stop (the )?(video|music)|pause (the )?(video|music|it)|scroll|page (up|down)|reload|refresh|(go to )?(the )?(top|bottom))\b`)
-	wakeRe         = regexp.MustCompile(`^(hey|hi|okay|ok) (voc|vok|vox|vauk|vac)\b[,.!]?\s*`)
 )
 
 var stopListeningRe = regexp.MustCompile(`^(please )?(stop|pause|quit|end) (listening|hands free|hands-free)\b`)
@@ -481,7 +590,7 @@ func (s *Server) runTurn(ctx context.Context, turn uint32, pcm []byte, text stri
 		sink.Event(agent.Event{Type: "timing", Turn: turn, MS: heard.ms})
 	}
 	if pcm != nil {
-		tr, ms, err := s.transcribe(pcm)
+		tr, ms, err := s.transcribe(pcm, true) // push-to-talk: trim silence
 		if err != nil {
 			log.Error("transcribe", "err", err)
 			sink.Event(agent.Event{Type: "error", Turn: turn, Error: err.Error()})
@@ -510,10 +619,13 @@ func (s *Server) runTurn(ctx context.Context, turn uint32, pcm []byte, text stri
 	}
 }
 
-func (s *Server) transcribe(pcm []byte) (voice.Transcript, map[string]int, error) {
+func (s *Server) transcribe(pcm []byte, trim bool) (voice.Transcript, map[string]int, error) {
 	samples := voice.PCM16ToFloat(pcm)
 	t0 := time.Now()
-	speech := s.VAD.Trim(samples)
+	speech := samples
+	if trim {
+		speech = s.VAD.Trim(samples)
+	}
 	tVAD := time.Since(t0)
 	if len(speech) == 0 {
 		return voice.Transcript{}, map[string]int{"vad": int(tVAD.Milliseconds())}, nil

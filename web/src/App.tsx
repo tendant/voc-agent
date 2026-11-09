@@ -114,6 +114,8 @@ export default function App() {
   const handsFreeRef = useRef(false)
   handsFreeRef.current = handsFree
   const [hearing, setHearing] = useState(false)
+  // Hands-free falls asleep after a quiet spell; then only the wake word works.
+  const [asleep, setAsleep] = useState<string | null>(null) // wake word while asleep
   const unmuteTimer = useRef<number | undefined>(undefined)
 
   const loadReminders = useCallback(() => {
@@ -174,9 +176,13 @@ export default function App() {
           return
         case 'ignored':
           return
+        case 'listen_state':
+          setAsleep(m.text === 'asleep' ? (m.name ?? 'Victor') : null)
+          return
         case 'listen_stopped':
           setHandsFree(false)
           setHearing(false)
+          setAsleep(null)
           mic.current.stop()
           add({ who: 'system', text: 'Hands-free listening is off.' })
           return
@@ -322,6 +328,7 @@ export default function App() {
       send({ type: 'listen_stop' })
       setHandsFree(false)
       setHearing(false)
+      setAsleep(null)
       if (status !== 'listening') mic.current.stop()
       return
     }
@@ -372,7 +379,13 @@ export default function App() {
 
   const label: Record<Status, string> = {
     connecting: 'Connecting…',
-    ready: handsFree ? (hearing ? 'Hearing you…' : 'Listening — just talk (or hold to push-to-talk)') : 'Hold to talk',
+    ready: handsFree
+      ? hearing
+        ? 'Hearing you…'
+        : asleep
+          ? `Asleep — say “Hey ${asleep}” (or hold to talk)`
+          : 'Listening — just talk (or hold to push-to-talk)'
+      : 'Hold to talk',
     listening: 'Listening — release to send',
     thinking: 'Thinking… (hold to interrupt)',
     speaking: 'Speaking… (hold to interrupt)',
@@ -408,7 +421,7 @@ export default function App() {
       </section>
 
       <button
-        className={`ptt ${status}${handsFree && status === 'ready' ? ' handsfree' : ''}${hearing ? ' hearing' : ''}`}
+        className={`ptt ${status}${handsFree && status === 'ready' ? (asleep ? ' asleep' : ' handsfree') : ''}${hearing ? ' hearing' : ''}`}
         data-ptt
         disabled={!connected}
         onPointerDown={(e) => {

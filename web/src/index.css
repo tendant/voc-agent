@@ -92,3 +92,4 @@ header .cloud.on { color: var(--accent); border-color: var(--accent); }
 .ptt.hearing { background: var(--live); }
 .compose .hf { white-space: nowrap; }
 .compose .hf.on { background: var(--ok); color: white; border-color: var(--ok); }
+.ptt.asleep { background: color-mix(in srgb, var(--muted) 60%, var(--card)); color: var(--fg); }

@@ -255,7 +255,8 @@ func NewSherpaSegmenter(m ModelPaths) (Segmenter, error) {
 	cfg := sherpa.VadModelConfig{SampleRate: SampleRate, NumThreads: 1, Provider: "cpu"}
 	cfg.SileroVad = sherpa.SileroVadModelConfig{
 		Model: m.silero(), Threshold: 0.5, MinSilenceDuration: SegmentSilence,
-		MinSpeechDuration: 0.3, WindowSize: vadWindow, MaxSpeechDuration: 30,
+		// Short enough that "Hey" or a quick "Victor" counts as speech.
+		MinSpeechDuration: 0.2, WindowSize: vadWindow, MaxSpeechDuration: 30,
 	}
 	v := sherpa.NewVoiceActivityDetector(&cfg, 60)
 	if v == nil {

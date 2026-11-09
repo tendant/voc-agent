@@ -41,6 +41,8 @@ func main() {
 	desktop := flag.Bool("desktop", true, "let voc open web searches, links and allowlisted apps on this computer")
 	browser := flag.String("browser", "", "browser for opened links, e.g. Firefox (default: system default browser)")
 	apps := flag.String("apps", strings.Join(tools.DefaultApps, ","), "comma-separated apps voc may open")
+	wakeWord := flag.String("wake-word", server.DefaultWakeWord, "hands-free: name that wakes voc after it falls asleep (\"Hey Victor\")")
+	sleepAfter := flag.Duration("sleep-after", 10*time.Second, "hands-free: fall asleep after this long without you talking; 0 = never")
 	agentBrowser := flag.Bool("agent-browser", true, "use voc's own Chrome window for web pages, so it can play videos, read and click (needs Google Chrome)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -124,7 +126,8 @@ func main() {
 	fatal(log, sess.Restore(ctx))
 
 	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus,
-		NewSegmenter: func() (voice.Segmenter, error) { return voice.NewSherpaSegmenter(m) }}
+		NewSegmenter: func() (voice.Segmenter, error) { return voice.NewSherpaSegmenter(m) },
+		WakeWord:     *wakeWord, SleepAfter: *sleepAfter}
 	if agentB != nil {
 		srv.MediaPlaying = func() bool { return agentB.Playing(context.Background()) }
 	}
