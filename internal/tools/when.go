@@ -31,6 +31,10 @@ func ParseWhen(s string, now time.Time) (time.Time, error) {
 	}
 
 	toks := tokenize(raw)
+	toks, explicitDay, err := takeMonthDay(toks, now)
+	if err != nil {
+		return time.Time{}, err
+	}
 	if len(toks) > 1 && toks[0] == "in" {
 		return parseRelative(toks[1:], now, raw)
 	}
@@ -50,6 +54,18 @@ func ParseWhen(s string, now time.Time) (time.Time, error) {
 		return nil
 	}
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	if explicitDay != nil {
+		day = explicitDay
+		// A weekday said alongside a date ("Wednesday, November 11") is
+		// redundant; drop it rather than call it a second day.
+		var kept []string
+		for _, t := range toks {
+			if weekdays[t] == nil {
+				kept = append(kept, t)
+			}
+		}
+		toks = kept
+	}
 
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
@@ -260,4 +276,65 @@ func tokenize(s string) []string {
 	s = strings.NewReplacer("a.m.", "am", "p.m.", "pm", "a.m", "am", "p.m", "pm").Replace(s)
 	s = strings.TrimRight(strings.TrimSpace(s), ".")
 	return strings.Fields(s)
+}
+
+var months = map[string]time.Month{}
+
+func init() {
+	for m := time.January; m <= time.December; m++ {
+		name := strings.ToLower(m.String())
+		months[name], months[name[:3]] = m, m
+	}
+	months["sept"] = time.September
+}
+
+var dayNum = regexp.MustCompile(`^(\d{1,2})(st|nd|rd|th)?$`)
+
+// takeMonthDay removes a calendar date ("November 11", "nov 11th", "11
+// November", optional year) from toks and returns that day. A date already
+// past this year means next year.
+func takeMonthDay(toks []string, now time.Time) ([]string, *time.Time, error) {
+	for i, t := range toks {
+		m, ok := months[t]
+		if !ok {
+			continue
+		}
+		dayAt, d := -1, 0
+		if i+1 < len(toks) {
+			if g := dayNum.FindStringSubmatch(toks[i+1]); g != nil {
+				d, _ = strconv.Atoi(g[1])
+				dayAt = i + 1
+			}
+		}
+		if dayAt < 0 && i > 0 {
+			if g := dayNum.FindStringSubmatch(toks[i-1]); g != nil {
+				d, _ = strconv.Atoi(g[1])
+				dayAt = i - 1
+			}
+		}
+		if dayAt < 0 || d < 1 || d > 31 {
+			return nil, nil, fmt.Errorf("which day of %s?", m)
+		}
+		year, yearAt := now.Year(), -1
+		if j := max(i, dayAt) + 1; j < len(toks) {
+			if y, err := strconv.Atoi(toks[j]); err == nil && y >= now.Year() && y < now.Year()+5 {
+				year, yearAt = y, j
+			}
+		}
+		day := time.Date(year, m, d, 0, 0, 0, 0, now.Location())
+		if day.Month() != m {
+			return nil, nil, fmt.Errorf("%s doesn't have %d days", m, d)
+		}
+		if yearAt < 0 && day.Before(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())) {
+			day = day.AddDate(1, 0, 0)
+		}
+		var rest []string
+		for j, x := range toks {
+			if j != i && j != dayAt && j != yearAt {
+				rest = append(rest, x)
+			}
+		}
+		return rest, &day, nil
+	}
+	return toks, nil, nil
 }

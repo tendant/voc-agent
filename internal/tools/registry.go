@@ -27,8 +27,12 @@ type Call struct {
 	Approve func(ctx context.Context, req ApprovalRequest) (bool, error)
 }
 
-// ApprovalRequest is shown to the user before data leaves the device.
+// ApprovalRequest is shown to the user before data leaves the device
+// (Kind "cloud", the default) or before a multi-step plan runs (Kind "plan").
 type ApprovalRequest struct {
+	Kind        string          `json:"kind,omitempty"`
+	Prompt      string          `json:"prompt,omitempty"` // spoken when asking
+	Plan        json.RawMessage `json:"plan,omitempty"`   // Kind "plan": summary and steps
 	ID          string          `json:"id"`
 	Destination string          `json:"destination"`
 	Model       string          `json:"model"`
@@ -49,6 +53,32 @@ type Tool struct {
 	// enabled, if set, hides the tool when it can't be used right now (e.g.
 	// page actions while no browser window is open), keeping prompts short.
 	enabled func() bool
+	// readOnly tools only look things up; goal mode runs them without asking.
+	readOnly bool
+}
+
+// ReadOnly marks a tool as side-effect free.
+func (t Tool) ReadOnly() Tool {
+	t.readOnly = true
+	return t
+}
+
+// Info describes a registered tool for planners.
+type Info struct {
+	Name, Description string
+	Schema            json.RawMessage
+	ReadOnly          bool
+}
+
+// Available lists the tools usable right now.
+func (r *Registry) Available() []Info {
+	var out []Info
+	for i := range r.tools {
+		if t := &r.tools[i]; t.available() {
+			out = append(out, Info{t.Name, t.Description, t.Schema, t.readOnly})
+		}
+	}
+	return out
 }
 
 // When returns a copy of t that is offered only while enabled reports true.

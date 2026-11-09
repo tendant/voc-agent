@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Mic, Player } from './audio'
 import { ApprovalDialog, type ApprovalRequest } from './Approval'
 import { AuditLog } from './Audit'
+import { PlanDialog, TaskPanel, type GoalPlan } from './Task'
 
 type Line = {
   key: string
@@ -116,6 +117,8 @@ export default function App() {
   const [hearing, setHearing] = useState(false)
   // Hands-free falls asleep after a quiet spell; then only the wake word works.
   const [asleep, setAsleep] = useState<string | null>(null) // wake word while asleep
+  // Goal mode: the current task and its live progress.
+  const [task, setTask] = useState<{ goal: string; status: string; plan: GoalPlan } | null>(null)
   const unmuteTimer = useRef<number | undefined>(undefined)
 
   const loadReminders = useCallback(() => {
@@ -230,6 +233,9 @@ export default function App() {
           break
         case 'approval_request':
           setApproval(m.result as ApprovalRequest)
+          break
+        case 'goal':
+          setTask({ goal: m.name ?? '', status: m.text ?? '', plan: m.result as GoalPlan })
           break
         case 'approval_resolved':
           setApproval(null)
@@ -404,7 +410,11 @@ export default function App() {
           </span>
         )}
       </header>
-      {approval && <ApprovalDialog req={approval} onDecide={decide} />}
+      {approval && (approval as any).kind === 'plan' ? (
+        <PlanDialog goal={approval.reason} plan={(approval as any).plan as GoalPlan} onDecide={decide} />
+      ) : (
+        approval && <ApprovalDialog req={approval} onDecide={decide} />
+      )}
 
       <section className="transcript" aria-live="polite" ref={scroller}>
         {lines.length === 0 && (
@@ -450,6 +460,8 @@ export default function App() {
           Send
         </button>
       </form>
+
+      {task && task.plan?.steps?.length > 0 && <TaskPanel goal={task.goal} status={task.status} plan={task.plan} />}
 
       {reminders.length > 0 && (
         <section className="reminders" aria-label="Reminders">

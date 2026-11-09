@@ -345,6 +345,26 @@ Live (`VOC_LIVE=1 go test ./internal/agent -run LiveBrowse`, local pages):
 2/2 suites pass. Not done: typing into rich editors, multi-step goals,
 choosing between tabs.
 
+### Post-MVP: goal mode — ✅ 2026-11-08
+
+The user says the outcome and voc does the rest: plan (JSON schema), one
+approval if the plan acts, then step by step it fills in arguments (JSON
+schema), runs each call through the normal tool guards, fixes arguments
+once, re-plans once, and gives a report checked against the results.
+- **Journal:** tasks go in SQLite. Startup marks running tasks interrupted;
+  "continue my last task" resumes, and step/call idempotency keys (plus a
+  durable `actions` table) prevent repeats. The test cuts a task off after
+  its first reminder and confirms resume makes only the second. This meets
+  the Phase 4 exit criterion.
+- **Rules enforced in code, because a small planner ignores them in
+  prompts:** consecutive same-tool steps are merged, reminders are capped,
+  and Apple Notes tools are offered only when the goal mentions them.
+
+Local planner (Qwen3-8B), 4 live goals: 18–41 s per goal with thinking, and
+once past the 3-minute budget; plans varied run to run (5–6 reminders in
+some runs, the wrong day for "at 8 pm"). Without thinking it was faster but
+made more errors.
+
 ## WebSocket protocol
 
 | Direction | Message |

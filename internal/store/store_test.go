@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,5 +197,29 @@ func TestOldDatabaseUpgrades(t *testing.T) {
 	got, _ := s.RecentMessages(ctx, 10)
 	if len(got) != 2 || got[0].Content != "hi" || got[1].ToolName != "list_reminders" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestTasks(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	id, err := s.CreateTask(ctx, "get ready", "running", json.RawMessage(`{"steps":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.CreateTask(ctx, "older done", "done", nil)
+	if n, _ := s.MarkInterrupted(ctx); n != 1 {
+		t.Fatalf("interrupted %d", n)
+	}
+	r, ok, _ := s.ResumableTask(ctx)
+	if !ok || r.ID != id || r.Status != "interrupted" {
+		t.Fatalf("resumable: %+v %v", r, ok)
+	}
+	s.UpdateTask(ctx, id, "done", json.RawMessage(`{"steps":[1]}`))
+	if got, _ := s.Task(ctx, id); got.Status != "done" || string(got.Plan) != `{"steps":[1]}` {
+		t.Fatalf("%+v", got)
+	}
+	if _, ok, _ := s.ResumableTask(ctx); ok {
+		t.Fatal("nothing should be resumable")
 	}
 }

@@ -112,7 +112,11 @@ func (s *Server) Approve(ctx context.Context, turn uint32, sink agent.Sink, req 
 	b, _ := json.Marshal(req)
 	sink.Event(agent.Event{Type: "approval_request", Turn: turn, Result: b})
 	if s.TTS != nil {
-		if a, err := s.TTS.Synthesize("This needs Claude in the cloud. Check what will be sent on screen, then say approve or cancel."); err == nil {
+		prompt := req.Prompt
+		if prompt == "" {
+			prompt = "This needs Claude in the cloud. Check what will be sent on screen, then say approve or cancel."
+		}
+		if a, err := s.TTS.Synthesize(prompt); err == nil {
 			sink.Audio(turn, a)
 		}
 	}

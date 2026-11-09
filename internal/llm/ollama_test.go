@@ -97,3 +97,19 @@ func TestOllamaToolCalls(t *testing.T) {
 		t.Fatalf("tool_name not sent: %v", m)
 	}
 }
+
+func TestOllamaThinkAndFormat(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"{\"ok\":true}","thinking":"hmm"},"done":true}`)
+	}))
+	defer ts.Close()
+	msg, err := (&Ollama{BaseURL: ts.URL, Model: "m"}).Chat(context.Background(), Request{Think: true, Format: json.RawMessage(`{"type":"object"}`)}, nil)
+	if err != nil || msg.Content != `{"ok":true}` {
+		t.Fatalf("%+v %v", msg, err)
+	}
+	if got["think"] != true || got["format"].(map[string]any)["type"] != "object" {
+		t.Fatalf("request: %v", got)
+	}
+}

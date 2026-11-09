@@ -216,6 +216,14 @@ type Session struct {
 	Approver   func(ctx context.Context, turn uint32, sink Sink, req tools.ApprovalRequest) (bool, error)
 	MaxHistory int // messages kept, excluding the system prompt; default 20
 	Now        func() time.Time
+	// Tasks journals goal-mode tasks; nil disables goal mode.
+	Tasks *store.Store
+	// PlanFast plans goals without the model's thinking (faster, less careful).
+	PlanFast bool
+	// Planner is the model for goal mode (planning, step details, report);
+	// nil uses LLM. PlannerThinks says whether it supports thinking.
+	Planner       llm.Chat
+	PlannerThinks bool
 
 	ackOnce  sync.Once
 	ackAudio voice.Audio
@@ -265,6 +273,13 @@ func (s *Session) maxHistory() int {
 		return 30
 	}
 	return s.MaxHistory
+}
+
+func (s *Session) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 func (s *Session) systemPrompt() string {
@@ -332,6 +347,7 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 
 	msgs := append([]llm.Message{{Role: "system", Content: s.systemPrompt()}}, s.History()...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: user})
+	goalNotes := "" // recalled notes, also given to goal mode
 	if s.Recall != nil {
 		notes, err := s.Recall(ctx, user)
 		if err != nil {
@@ -345,6 +361,11 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 				fmt.Fprintf(&b, "\n--- Note: %s ---\n%s\n", n.Title, strings.TrimSpace(n.Body))
 			}
 			msgs = append(msgs, llm.Message{Role: "system", Content: b.String()})
+			var g strings.Builder
+			for _, n := range notes {
+				fmt.Fprintf(&g, "\n--- Note: %s ---\n%s\n", n.Title, strings.TrimSpace(n.Body))
+			}
+			goalNotes = g.String()
 			res, _ := json.Marshal(notes)
 			sink.Event(Event{Type: "recall", Turn: turn, Result: res})
 		}
@@ -464,6 +485,37 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			return
 		}
 
+		// Goal mode: an outcome to achieve, or resuming an unfinished task.
+		goalEnvFor := func() goalEnv {
+			return goalEnv{ctx: ctx, turn: turn, sink: sink, user: user, notes: goalNotes,
+				say: say,
+				run: func(tc llm.ToolCall) tools.Result {
+					callMsg := llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}}
+					msgs = append(msgs, callMsg)
+					exchange = append(exchange, callMsg)
+					return runTool(tc)
+				},
+				setKey: func(k string) { call.TurnKey = k },
+				ok:     func() map[string]bool { return succeeded },
+			}
+		}
+		if s.goalsEnabled() {
+			if resumeIntent.MatchString(user) {
+				if t, ok, _ := s.Tasks.ResumableTask(ctx); ok {
+					finalFrom = spoken.Len()
+					s.runGoal(goalEnvFor(), "", &t)
+					llmEnd = ms()
+					return
+				}
+			}
+			if goalIntent.MatchString(user) {
+				finalFrom = spoken.Len()
+				s.runGoal(goalEnvFor(), user, nil)
+				llmEnd = ms()
+				return
+			}
+		}
+
 		var required []string
 		for _, r := range requiredTools(user) {
 			if s.Tools == nil || !s.Tools.Has(r) { // e.g. ask_cloud only when cloud is enabled
@@ -499,6 +551,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			req := llm.Request{Messages: msgs}
 			if s.Tools != nil && round < maxToolRounds {
 				req.Tools = s.Tools.Specs()
+				if s.goalsEnabled() && round == 0 {
+					req.Tools = append(req.Tools, planAndDoTool)
+				}
 			}
 			// While a required action is outstanding, hold this round's text
 			// until we know it came with a tool call.
@@ -564,6 +619,16 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			// safe to say ("Let me check."), except claims not yet backed.
 			if hold {
 				say(held)
+			}
+			// The model handed the request to goal mode.
+			if tc := reply.ToolCalls[0]; tc.Function.Name == planAndDoTool.Function.Name && s.goalsEnabled() {
+				var a struct {
+					Goal string `json:"goal"`
+				}
+				json.Unmarshal(tc.Function.Arguments, &a)
+				finalFrom = spoken.Len()
+				s.runGoal(goalEnvFor(), cmpOr(strings.TrimSpace(a.Goal), user), nil)
+				break
 			}
 			msgs = append(msgs, reply)
 			exchange = append(exchange, llm.Message{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})

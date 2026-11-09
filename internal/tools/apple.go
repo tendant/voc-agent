@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -55,7 +56,7 @@ func AppleNotes(st *store.Store, n apple.Notes) []Tool {
 					return nil, appleErr("Notes", err)
 				}
 				return privateResult{Data: map[string]any{"count": len(hits), "notes": hits}, Note: private}, nil
-			}),
+			}).ReadOnly(),
 		Typed("apple_notes_read",
 			"Read one Apple Note by its title.",
 			func(ctx context.Context, _ Call, a readArgs) (any, error) {
@@ -64,7 +65,7 @@ func AppleNotes(st *store.Store, n apple.Notes) []Tool {
 					return nil, appleErr("Notes", err)
 				}
 				return privateResult{Data: note, Note: private}, nil
-			}),
+			}).ReadOnly(),
 		Typed("apple_notes_create",
 			"Create a new note in the user's Apple Notes app. Only say it was saved after this returns status \"created\".",
 			func(ctx context.Context, c Call, a createArgs) (any, error) {
@@ -73,12 +74,20 @@ func AppleNotes(st *store.Store, n apple.Notes) []Tool {
 					// synced app
 					return nil, fmt.Errorf("not saved: it contains text from your local-only notes, which stay out of synced apps")
 				}
-				key := c.TurnKey + "\x00" + strings.ToLower(strings.TrimSpace(a.Title))
+				key := "apple_notes_create\x00" + c.TurnKey + "\x00" + strings.ToLower(strings.TrimSpace(a.Title))
 				mu.Lock()
 				prev, dup := made[key]
 				mu.Unlock()
 				if dup {
 					return prev, nil
+				}
+				if st != nil { // survives restarts: a resumed task won't make it twice
+					if r, ok := st.ActionDone(ctx, key); ok {
+						var res map[string]any
+						json.Unmarshal(r, &res)
+						res["status"] = "already_exists"
+						return res, nil
+					}
 				}
 				hit, err := n.Create(ctx, strings.TrimSpace(a.Title), a.Body)
 				if err != nil {
@@ -88,6 +97,10 @@ func AppleNotes(st *store.Store, n apple.Notes) []Tool {
 				mu.Lock()
 				made[key] = res
 				mu.Unlock()
+				if st != nil {
+					b, _ := json.Marshal(res)
+					st.RecordAction(context.WithoutCancel(ctx), key, b)
+				}
 				return res, nil
 			}),
 	}
@@ -168,7 +181,7 @@ func Media(b *browser.Browser, m *apple.Music) Tool {
 	return t.When(func() bool { return m != nil || (b != nil && b.IsOpen()) })
 }
 
-var musicNoise = regexp.MustCompile(`(?i)^(?:(?:my|the|some|a|an|me)\s+)+|\s+(?:playlist|album|record|songs?|tracks?|music)$|^(?:songs?|music|tracks?)\s+by\s+`)
+var musicNoise = regexp.MustCompile(`(?i)^(?:(?:play|put on|listen to|my|the|some|a|an|me)\s+)+|\s+(?:playlist|album|record|songs?|tracks?|music)$|^(?:songs?|music|tracks?)\s+by\s+`)
 
 // musicQuery strips words that describe the request rather than name the
 // music ("my workout playlist" → "workout", kind playlist), since the

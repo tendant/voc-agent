@@ -69,3 +69,22 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- Goal-mode tasks: the plan and every step's progress, so a task cut off by
+-- a restart can be resumed without repeating finished steps.
+CREATE TABLE IF NOT EXISTS tasks (
+  id         INTEGER PRIMARY KEY,
+  goal       TEXT NOT NULL,
+  status     TEXT NOT NULL,          -- planned | running | done | failed | cancelled | interrupted
+  plan       TEXT NOT NULL DEFAULT '{}', -- JSON: summary and steps with status/results
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Side effects done under an idempotency key (survives restarts), so a
+-- resumed task doesn't repeat an action that already happened.
+CREATE TABLE IF NOT EXISTS actions (
+  key        TEXT PRIMARY KEY,
+  result     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);

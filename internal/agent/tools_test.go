@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,8 +22,11 @@ type scriptLLM struct {
 
 func (s *scriptLLM) Chat(_ context.Context, req llm.Request, on func(string)) (llm.Message, error) {
 	s.reqs = append(s.reqs, req)
+	if len(s.reqs) > len(s.rounds) {
+		return llm.Message{}, fmt.Errorf("script ran out: request %d, %d scripted", len(s.reqs), len(s.rounds))
+	}
 	m := s.rounds[len(s.reqs)-1]
-	if m.Content != "" {
+	if m.Content != "" && on != nil {
 		on(m.Content)
 	}
 	return m, nil

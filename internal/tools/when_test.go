@@ -10,34 +10,39 @@ func TestParseWhen(t *testing.T) {
 	now := time.Date(2026, 11, 8, 15, 10, 0, 0, loc) // Sunday 3:10 PM
 	at := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, loc) }
 	cases := map[string]time.Time{
-		"tomorrow":                  at(9, 9, 0),
-		"tomorrow at 9am":           at(9, 9, 0),
-		"Tomorrow at 9 a.m.":        at(9, 9, 0),
-		"tomorrow 9 pm":             at(9, 21, 0),
-		"tomorrow morning":          at(9, 9, 0),
-		"tomorrow evening":          at(9, 18, 0),
-		"tomorrow evening at 7":     at(9, 19, 0),
-		"tomorrow at 3":             at(9, 15, 0),
-		"tomorrow at 10:30":         at(9, 10, 30),
-		"tonight":                   at(8, 20, 0),
-		"today at 5pm":              at(8, 17, 0),
-		"5pm":                       at(8, 17, 0),
-		"at 2pm":                    at(9, 14, 0), // already past today
-		"noon":                      at(9, 12, 0),
-		"17:45":                     at(8, 17, 45),
-		"monday":                    at(9, 9, 0),
-		"next friday at 3pm":        at(13, 15, 0),
-		"sunday":                    at(15, 9, 0), // said on Sunday → next week
-		"the day after tomorrow":    at(10, 9, 0),
-		"next week":                 at(9, 9, 0),
-		"in 20 minutes":             now.Add(20 * time.Minute),
-		"in an hour":                now.Add(time.Hour),
-		"in half an hour":           now.Add(30 * time.Minute),
-		"in 2 hours and 30 minutes": now.Add(150 * time.Minute),
-		"in a couple of days":       now.Add(48 * time.Hour),
-		"2026-11-10 09:00":          at(10, 9, 0),
-		"2026-11-10":                at(10, 9, 0),
-		"2026-11-10T08:15:00-08:00": at(10, 8, 15),
+		"tomorrow":                          at(9, 9, 0),
+		"tomorrow at 9am":                   at(9, 9, 0),
+		"Tomorrow at 9 a.m.":                at(9, 9, 0),
+		"tomorrow 9 pm":                     at(9, 21, 0),
+		"tomorrow morning":                  at(9, 9, 0),
+		"tomorrow evening":                  at(9, 18, 0),
+		"tomorrow evening at 7":             at(9, 19, 0),
+		"tomorrow at 3":                     at(9, 15, 0),
+		"tomorrow at 10:30":                 at(9, 10, 30),
+		"tonight":                           at(8, 20, 0),
+		"today at 5pm":                      at(8, 17, 0),
+		"5pm":                               at(8, 17, 0),
+		"at 2pm":                            at(9, 14, 0), // already past today
+		"noon":                              at(9, 12, 0),
+		"17:45":                             at(8, 17, 45),
+		"monday":                            at(9, 9, 0),
+		"next friday at 3pm":                at(13, 15, 0),
+		"sunday":                            at(15, 9, 0), // said on Sunday → next week
+		"the day after tomorrow":            at(10, 9, 0),
+		"next week":                         at(9, 9, 0),
+		"in 20 minutes":                     now.Add(20 * time.Minute),
+		"in an hour":                        now.Add(time.Hour),
+		"in half an hour":                   now.Add(30 * time.Minute),
+		"in 2 hours and 30 minutes":         now.Add(150 * time.Minute),
+		"in a couple of days":               now.Add(48 * time.Hour),
+		"2026-11-10 09:00":                  at(10, 9, 0),
+		"2026-11-10":                        at(10, 9, 0),
+		"2026-11-10T08:15:00-08:00":         at(10, 8, 15),
+		"Wednesday, November 11 at 5:30 PM": at(11, 17, 30),
+		"November 11":                       at(11, 9, 0),
+		"nov 12th at noon":                  at(12, 12, 0),
+		"12 November at 3pm":                at(12, 15, 0),
+		"November 11, 2026 at 8am":          at(11, 8, 0),
 	}
 	for in, want := range cases {
 		got, err := ParseWhen(in, now)
@@ -47,7 +52,10 @@ func TestParseWhen(t *testing.T) {
 			t.Errorf("%q = %s, want %s", in, got.Format(time.RFC1123), want.Format(time.RFC1123))
 		}
 	}
-	for _, bad := range []string{"", "whenever", "tomorrow-ish", "today at 9am", "tomorrow at 25", "in 3 fortnights", "monday tuesday", "13pm"} {
+	if got, err := ParseWhen("March 3", now); err != nil || got.Year() != 2027 {
+		t.Errorf("past date should be next year: %v %v", got, err)
+	}
+	for _, bad := range []string{"February 30", "November", "", "whenever", "tomorrow-ish", "today at 9am", "tomorrow at 25", "in 3 fortnights", "monday tuesday", "13pm"} {
 		if got, err := ParseWhen(bad, now); err == nil {
 			t.Errorf("%q should fail, got %s", bad, got)
 		}

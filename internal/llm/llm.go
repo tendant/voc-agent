@@ -39,6 +39,10 @@ type FunctionSpec struct {
 type Request struct {
 	Messages []Message
 	Tools    []Tool // may be empty
+	// Think enables the model's reasoning (slower; used for planning).
+	Think bool
+	// Format, if set, is a JSON Schema the reply must follow (structured output).
+	Format json.RawMessage
 }
 
 // Chat streams a completion. onDelta receives text as it is generated and may

@@ -21,13 +21,14 @@ type Ollama struct {
 }
 
 type ollamaReq struct {
-	Model     string         `json:"model"`
-	Messages  []Message      `json:"messages"`
-	Tools     []Tool         `json:"tools,omitempty"`
-	Stream    bool           `json:"stream"`
-	Think     bool           `json:"think"` // false: skip Qwen3 reasoning, too slow for voice
-	KeepAlive string         `json:"keep_alive,omitempty"`
-	Options   map[string]any `json:"options,omitempty"`
+	Model     string          `json:"model"`
+	Messages  []Message       `json:"messages"`
+	Tools     []Tool          `json:"tools,omitempty"`
+	Stream    bool            `json:"stream"`
+	Think     bool            `json:"think"` // false: skip Qwen3 reasoning, too slow for voice
+	Format    json.RawMessage `json:"format,omitempty"`
+	KeepAlive string          `json:"keep_alive,omitempty"`
+	Options   map[string]any  `json:"options,omitempty"`
 }
 
 type ollamaChunk struct {
@@ -66,7 +67,7 @@ func (o *Ollama) post(ctx context.Context, body ollamaReq) (*http.Response, erro
 }
 
 func (o *Ollama) Chat(ctx context.Context, r Request, onDelta func(string)) (Message, error) {
-	req := ollamaReq{Model: o.Model, Messages: r.Messages, Tools: r.Tools, Stream: true, KeepAlive: o.KeepAlive}
+	req := ollamaReq{Model: o.Model, Messages: r.Messages, Tools: r.Tools, Stream: true, KeepAlive: o.KeepAlive, Think: r.Think, Format: r.Format}
 	if req.Messages == nil {
 		req.Messages = []Message{}
 	}

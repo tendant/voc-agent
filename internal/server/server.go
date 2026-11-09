@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reminders", s.handleReminders)
 	mux.HandleFunc("GET /api/audit", s.handleAudit)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/tasks", s.handleTasks)
 	if s.Static != nil {
 		mux.Handle("/", s.Static)
 	}
@@ -648,4 +649,21 @@ func audioFrame(turn uint32, rate int, pcm []byte) []byte {
 	binary.LittleEndian.PutUint32(out[4:], uint32(rate))
 	copy(out[8:], pcm)
 	return out
+}
+
+func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if s.Store == nil {
+		http.Error(w, "no store", http.StatusNotFound)
+		return
+	}
+	ts, err := s.Store.RecentTasks(r.Context(), 10)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ts == nil {
+		ts = []store.Task{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ts)
 }

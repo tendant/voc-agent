@@ -43,6 +43,24 @@ can't click or read anything on the page. Limits:
 Flags: `-desktop=false` to turn it off, `-browser=Firefox` to pick a browser
 (default: the system default), `-apps=...` for a different allowlist.
 
+### Goal mode: say what you want done
+
+Ask for an outcome and voc works out the steps: "Get me ready for
+Thursday's billing deploy", "Help me prepare for my one-on-one with Maya",
+"Plan my evening: remind me to take the recycling out at 8 and put on some
+jazz".
+- **Plan:** voc makes a plan (up to 6 steps) from its tools and your notes,
+  shows it, says a one-line summary, and asks once ("go ahead" or click).
+  Plans that only look things up run without asking.
+- **Run:** it carries out each step, fixes bad details once, re-plans once
+  if a step fails, then tells you what actually happened. Limits: 10 actions,
+  3 reminders (5 if you asked for reminders), 3 minutes. "Stop" cancels.
+- **Resume:** every task is journaled. If voc is restarted mid-task, say
+  "continue my last task"; finished actions aren't repeated.
+- **Planner:** the local model plans (Qwen3-8B with thinking), so it takes
+  10–40 s per goal and plans vary run to run. Tools always run on your
+  machine.
+
 ### Apple Notes and Music
 
 - Apple Notes: "search my Apple Notes for the packing list", "read my

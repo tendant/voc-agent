@@ -66,7 +66,7 @@ func Personal(st *store.Store, now func() time.Time, onReminder func()) []Tool {
 					hits = []store.NoteHit{}
 				}
 				return map[string]any{"count": len(hits), "results": hits}, nil
-			}),
+			}).ReadOnly(),
 		Typed("create_reminder",
 			"Create a reminder that will be spoken to the user at the given time. Only say a reminder is set after this tool returns status \"created\" or \"already_exists\".",
 			func(ctx context.Context, c Call, a createArgs) (any, error) {
@@ -104,7 +104,7 @@ func Personal(st *store.Store, now func() time.Time, onReminder func()) []Tool {
 					out = append(out, toOut(r))
 				}
 				return map[string]any{"count": len(out), "reminders": out}, nil
-			}),
+			}).ReadOnly(),
 	}
 }
 

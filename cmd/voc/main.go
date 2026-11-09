@@ -139,7 +139,10 @@ func main() {
 			log.Error("log tool call", "err", err)
 		}
 	}
-	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st)}
+	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st), Tasks: st}
+	if n, err := st.MarkInterrupted(ctx); err == nil && n > 0 {
+		log.Info("tasks cut off by the last shutdown; say \"continue my last task\" to resume", "count", n)
+	}
 	fatal(log, sess.Restore(ctx))
 
 	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus,
