@@ -169,6 +169,8 @@ type Result struct {
 	JSON json.RawMessage `json:"result"` // the tool's result, or {"error": ...}
 	MS   int             `json:"ms"`
 	Say  string          `json:"-"` // speak this verbatim and end the turn
+	// Untrusted means the result carries third-party content (a web page).
+	Untrusted bool `json:"-"`
 }
 
 // Run executes a tool call. Failures (unknown tool, bad arguments, tool
@@ -191,8 +193,13 @@ func (r *Registry) Run(ctx context.Context, c Call, name string, args json.RawMe
 	} else if res.JSON, err = json.Marshal(out); err != nil {
 		res.OK = false
 		res.JSON, _ = json.Marshal(map[string]string{"error": "result not serializable: " + err.Error()})
-	} else if sy, ok := out.(Sayer); ok {
-		res.Say = sy.Say()
+	} else {
+		if sy, ok := out.(Sayer); ok {
+			res.Say = sy.Say()
+		}
+		if u, ok := out.(Untrusted); ok {
+			res.Untrusted = u.Untrusted()
+		}
 	}
 	if r.Log != nil {
 		r.Log(c, name, args, res.JSON, res.OK, time.Since(start))

@@ -140,19 +140,7 @@ func Desktop(st *store.Store, o Opener, apps []string) []Tool {
 	for _, a := range apps {
 		allowed[strings.ToLower(a)] = a
 	}
-	leakCheck := func(ctx context.Context, s string) error {
-		if st == nil {
-			return nil
-		}
-		private, err := st.NotesWithPrivacy(ctx, store.LocalOnly)
-		if err != nil {
-			return err
-		}
-		if v := policy.NewFingerprints(private).Check(s); v != nil {
-			return fmt.Errorf("not opened: it would send text from your local-only note %q to a website", v.Note)
-		}
-		return nil
-	}
+	leakCheck := func(ctx context.Context, s string) error { return leakCheck(ctx, st, s) }
 
 	type searchArgs struct {
 		Site  string `json:"site" desc:"Where to search" enum:"youtube,google,wikipedia,maps,duckduckgo,github"`
@@ -212,4 +200,8 @@ func Desktop(st *store.Store, o Opener, apps []string) []Tool {
 				return map[string]string{"status": "opened", "app": name}, nil
 			}),
 	}
+}
+
+func policyFingerprints(notes []store.RelevantNote) *policy.Fingerprints {
+	return policy.NewFingerprints(notes)
 }

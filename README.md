@@ -43,6 +43,27 @@ can't click or read anything on the page. Limits:
 Flags: `-desktop=false` to turn it off, `-browser=Firefox` to pick a browser
 (default: the system default), `-apps=...` for a different allowlist.
 
+### Browser agent
+
+If Google Chrome is installed, web pages open in **voc's own Chrome window**
+(a separate profile in `~/.voc/chrome-profile`, not logged into your
+accounts), so voc can also act on them:
+- "Play lo-fi jazz" plays the first YouTube result; "pause", "next",
+  "louder", "skip ahead" control it.
+- "What's this page about?" / "How long do I boil the pasta on this page?"
+  answer from the page text, read by the local model.
+- "Click next page" clicks a link or button by its text. voc refuses buttons
+  that buy, send, post, subscribe or delete.
+
+Page text is treated as untrusted. After voc reads a page, the tools that
+could carry data out (cloud, searches, links, playing) run only if your own
+words asked for them, so a page can't instruct it to leak your notes.
+
+With hands-free on while something plays, the speakers reach the mic, so voc
+only accepts media commands ("pause", "next", "turn it down") or anything
+starting with "hey voc". `-agent-browser=false` turns the browser agent off
+(pages then open in your normal browser).
+
 ### Cloud escalation (optional)
 
 ```sh

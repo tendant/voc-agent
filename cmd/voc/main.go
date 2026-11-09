@@ -18,6 +18,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/v2/option"
 
 	"github.com/tendant/voc-agent/internal/agent"
+	browserpkg "github.com/tendant/voc-agent/internal/browser"
 	"github.com/tendant/voc-agent/internal/cloud"
 	"github.com/tendant/voc-agent/internal/llm"
 	"github.com/tendant/voc-agent/internal/reminders"
@@ -40,6 +41,7 @@ func main() {
 	desktop := flag.Bool("desktop", true, "let voc open web searches, links and allowlisted apps on this computer")
 	browser := flag.String("browser", "", "browser for opened links, e.g. Firefox (default: system default browser)")
 	apps := flag.String("apps", strings.Join(tools.DefaultApps, ","), "comma-separated apps voc may open")
+	agentBrowser := flag.Bool("agent-browser", true, "use voc's own Chrome window for web pages, so it can play videos, read and click (needs Google Chrome)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -82,6 +84,7 @@ func main() {
 
 	sched := (&reminders.Scheduler{Store: st, Log: log}).Init()
 	toolset := tools.Personal(st, nil, sched.Wake)
+	var agentB *browserpkg.Browser
 	if *desktop {
 		var allowed []string
 		for _, a := range strings.Split(*apps, ",") {
@@ -89,8 +92,19 @@ func main() {
 				allowed = append(allowed, a)
 			}
 		}
-		toolset = append(toolset, tools.Desktop(st, &tools.SystemOpener{Browser: *browser}, allowed)...)
-		log.Info("desktop actions enabled", "browser", cmp.Or(*browser, "default"), "apps", len(allowed))
+		var opener tools.Opener = &tools.SystemOpener{Browser: *browser}
+		if *agentBrowser {
+			if b := browserpkg.New(browserpkg.Config{}); b.Available() {
+				defer b.Close()
+				agentB = b
+				opener = &tools.BrowserOpener{B: b, Apps: opener}
+				toolset = append(toolset, tools.Browse(st, b)...)
+			} else {
+				log.Warn("Google Chrome not found; web pages open in the system browser and voc can't act on them")
+			}
+		}
+		toolset = append(toolset, tools.Desktop(st, opener, allowed)...)
+		log.Info("desktop actions enabled", "browser", cmp.Or(*browser, "default"), "apps", len(allowed), "agent_browser", agentB != nil)
 	}
 	cl, cloudStatus := setupCloud(*cloudMode, *cloudModel)
 	if cl != nil {
@@ -111,6 +125,9 @@ func main() {
 
 	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus,
 		NewSegmenter: func() (voice.Segmenter, error) { return voice.NewSherpaSegmenter(m) }}
+	if agentB != nil {
+		srv.MediaPlaying = func() bool { return agentB.Playing(context.Background()) }
+	}
 	sess.Approver = srv.Approve
 	sched.CanDeliver, sched.Deliver = srv.Listening, srv.Notify
 	go sched.Run(ctx)

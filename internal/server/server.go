@@ -52,6 +52,10 @@ type Server struct {
 	// NewSegmenter creates a per-connection utterance detector for
 	// hands-free listening; nil disables hands-free mode.
 	NewSegmenter func() (voice.Segmenter, error)
+	// MediaPlaying reports whether voc's browser is playing audio. Its sound
+	// reaches the mic, so hands-free then accepts only media commands (or
+	// anything starting with "hey voc"). May be nil.
+	MediaPlaying func() bool
 	Static       http.Handler // built web UI; nil in dev (Vite serves it)
 	Log          *slog.Logger
 	Cloud        CloudStatus // reported by /api/status
@@ -218,10 +222,20 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				sink.Event(agent.Event{Type: "ignored", Text: tr.Text})
 				return
 			}
-			if stopListeningRe.MatchString(normalize(tr.Text)) {
+			if isStopListening(tr.Text) {
 				sink.Event(agent.Event{Type: "transcript", Final: true, Text: tr.Text, Lang: tr.Lang})
 				stopListening(true)
 				return
+			}
+			if s.MediaPlaying != nil && s.MediaPlaying() {
+				n := normalize(tr.Text)
+				if rest, ok := strings.CutPrefix(n, ""); ok && wakeRe.MatchString(rest) {
+					tr.Text = strings.TrimSpace(wakeRe.ReplaceAllString(rest, ""))
+				} else if !mediaCommandRe.MatchString(n) {
+					// Probably the video talking, not the user.
+					sink.Event(agent.Event{Type: "ignored", Text: tr.Text, Error: "media is playing: say a media command or start with \"hey voc\""})
+					return
+				}
 			}
 		}
 		if p != nil {
@@ -314,7 +328,46 @@ type heardUtterance struct {
 	start time.Time
 }
 
+// While media plays in voc's browser, hands-free only accepts these, or
+// anything after "hey voc".
+var (
+	mediaCommandRe = regexp.MustCompile(`^(please )?(pause|stop|play|resume|continue|next|skip|mute|unmute|louder|quieter|volume (up|down)|turn (it )?(up|down)|go back|restart|start over|stop (the )?(video|music)|pause (the )?(video|music|it))\b`)
+	wakeRe         = regexp.MustCompile(`^(hey|hi|okay|ok) (voc|vok|vox|vauk|vac)\b[,.!]?\s*`)
+)
+
 var stopListeningRe = regexp.MustCompile(`^(please )?(stop|pause|quit|end) (listening|hands free|hands-free)\b`)
+
+// isStopListening also accepts a misheard first word ("Dtop listening",
+// "Dotop listening"): a short phrase ending in "listening" whose first word
+// is close to stop/pause/quit/end. "Don't stop listening" doesn't match.
+func isStopListening(text string) bool {
+	n := normalize(text)
+	if stopListeningRe.MatchString(n) {
+		return true
+	}
+	w := strings.Fields(strings.NewReplacer(",", " ", ".", " ").Replace(n))
+	if len(w) < 2 || len(w) > 3 || w[len(w)-1] != "listening" {
+		return false
+	}
+	first := w[0]
+	if first == "please" && len(w) == 3 {
+		first = w[1]
+	} else if len(w) == 3 {
+		return false
+	}
+	// "X listening" alone is almost certainly the command, so allow a
+	// rougher match there ("Dotop listening").
+	maxDist := 1
+	if len(w) == 2 {
+		maxDist = 2
+	}
+	for _, v := range []string{"stop", "pause", "quit", "end"} {
+		if len(first) >= 3 && editDistance(first, v) <= maxDist {
+			return true
+		}
+	}
+	return false
+}
 
 // fillers are utterances that are never requests on their own.
 var fillers = map[string]bool{"um": true, "uh": true, "umm": true, "uhh": true, "hmm": true, "hm": true,

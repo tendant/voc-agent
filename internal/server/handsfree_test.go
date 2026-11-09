@@ -14,6 +14,21 @@ import (
 	"github.com/tendant/voc-agent/internal/voice"
 )
 
+func TestMediaGate(t *testing.T) {
+	for in, want := range map[string]bool{"Pause.": true, "pause the video": true, "Next.": true, "turn it down": true,
+		"louder": true, "and then he said we should go": false, "subscribe to my channel": false} {
+		if got := mediaCommandRe.MatchString(normalize(in)); got != want {
+			t.Errorf("%q: %v", in, got)
+		}
+	}
+	for in, want := range map[string]string{"Hey voc, what's the weather": "what's the weather", "ok vox remind me at 5": "remind me at 5"} {
+		n := normalize(in)
+		if !wakeRe.MatchString(n) || wakeRe.ReplaceAllString(n, "") != want {
+			t.Errorf("%q → %q", in, wakeRe.ReplaceAllString(n, ""))
+		}
+	}
+}
+
 func TestIsNoise(t *testing.T) {
 	for in, want := range map[string]bool{"": true, ".": true, "Um.": true, "uh, hmm": true, "嗯": true, "Oh.": true,
 		"Hi there": false, "Stop": false, "What's the time?": false, "um what is the time": false} {
@@ -22,8 +37,10 @@ func TestIsNoise(t *testing.T) {
 		}
 	}
 	for in, want := range map[string]bool{"Stop listening.": true, "please stop listening": true, "Pause listening": true,
-		"stop listing my reminders": false, "don't stop listening": false} {
-		if got := stopListeningRe.MatchString(normalize(in)); got != want {
+		"Dtop listening.": true, "Dotop listening.": true, "Top listening.": true, "Stopp listening": true, "please dtop listening": true,
+		"stop listing my reminders": false, "don't stop listening": false, "keep listening": false, "listening": false,
+		"I am listening": false} {
+		if got := isStopListening(in); got != want {
 			t.Errorf("stop %q: %v", in, got)
 		}
 	}
@@ -47,11 +64,23 @@ func TestHandsFree(t *testing.T) {
 	c := dial(t, srv)
 	t.Cleanup(func() { asr.Close(); vad.Close(); tts.Close() })
 
-	stop, _ := tts.Synthesize("Stop listening.")
+	// Piper's voice is randomized, so the same text can come out as audio the
+	// recognizer mishears. This test is about the server, not ASR: use a take
+	// that is recognized as the command.
+	var stopPCM []float32
+	for try := 0; try < 5 && stopPCM == nil; try++ {
+		a, _ := tts.Synthesize("Stop listening.")
+		pcm := voice.Resample(a.Samples, a.SampleRate, voice.SampleRate)
+		if tr, _ := asr.Transcribe(vad.Trim(pcm)); isStopListening(tr.Text) {
+			stopPCM = pcm
+		}
+	}
+	if stopPCM == nil {
+		t.Fatal("no recognizable take of \"Stop listening.\" in 5 tries")
+	}
 	silence := make([]float32, voice.SampleRate)
 	var stream []float32
-	for _, part := range [][]float32{silence, sherpa.ReadWave(wav).Samples, silence,
-		voice.Resample(stop.Samples, stop.SampleRate, voice.SampleRate), silence} {
+	for _, part := range [][]float32{silence, sherpa.ReadWave(wav).Samples, silence, stopPCM, silence} {
 		stream = append(stream, part...)
 	}
 	pcm := voice.FloatToPCM16(stream)

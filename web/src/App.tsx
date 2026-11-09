@@ -41,6 +41,14 @@ function describeTool(name: string, args: any, result: any, ok?: boolean): strin
       return `Reminder ${result?.status === 'already_exists' ? 'already existed' : 'created'}: “${result?.reminder?.text}”, ${result?.reminder?.due}`
     case 'list_reminders':
       return `Listed ${result?.count ?? 0} upcoming reminder(s)`
+    case 'youtube_play':
+      return `Playing “${result?.title}” on YouTube`
+    case 'media':
+      return `${result?.action ?? args?.action}: ${result?.playing ? 'playing' : 'paused'}${result?.ad ? ' (an ad is showing)' : ''}${result?.title ? ` — ${result.title}` : ''}`
+    case 'page_read':
+      return `Read the page “${result?.untrusted_page_content?.title ?? ''}”`
+    case 'page_click':
+      return `Clicked “${result?.label}”`
     case 'web_search':
       return `Opened ${result?.site} search for “${result?.query}”`
     case 'open_url':
