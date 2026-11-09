@@ -43,6 +43,23 @@ can't click or read anything on the page. Limits:
 Flags: `-desktop=false` to turn it off, `-browser=Firefox` to pick a browser
 (default: the system default), `-apps=...` for a different allowlist.
 
+### Apple Notes and Music
+
+- Apple Notes: "search my Apple Notes for the packing list", "read my
+  packing list note", "make a note called Groceries with eggs and milk".
+  There is no edit or delete. Saying "my notes" without "Apple" still means
+  voc's local notes folder.
+- Apple Music: "play Kind of Blue", "play my workout playlist", "play some
+  Miles Davis". This covers your library and playlists only; Apple's
+  scripting doesn't reach the streaming catalog.
+- "Pause", "next", "previous song", "louder" and "what's playing?" go to
+  whatever is playing, Music or the browser, instantly.
+- The first time, macOS asks whether the app you started voc from (Terminal,
+  iTerm…) may control Notes or Music. If you said no, allow it in System
+  Settings → Privacy & Security → Automation. `-apple=false` turns this off.
+- Apple Notes text counts as private: after voc reads a note, sending
+  anything out (cloud, searches, links) needs your own words to allow it.
+
 ### Browser agent
 
 If Google Chrome is installed, web pages open in **voc's own Chrome window**

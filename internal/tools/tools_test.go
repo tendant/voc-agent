@@ -118,3 +118,16 @@ func TestToolGating(t *testing.T) {
 		t.Fatalf("open: %d specs", n)
 	}
 }
+
+func TestMusicQuery(t *testing.T) {
+	for in, want := range map[[2]string]string{
+		{"workout playlist", "playlist"}: "workout playlist", {"my workout playlist", ""}: "workout playlist",
+		{"Kind of Blue", "album"}: "Kind of Blue album", {"songs by Miles Davis", ""}: "Miles Davis artist",
+		{"some jazz", "any"}: "jazz any", {"the Beatles", "artist"}: "Beatles artist",
+	} {
+		q, k := musicQuery(in[0], in[1])
+		if q+" "+k != want {
+			t.Errorf("%v: %q %q", in, q, k)
+		}
+	}
+}

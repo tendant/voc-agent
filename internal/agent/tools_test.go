@@ -380,7 +380,7 @@ func TestMediaClaims(t *testing.T) {
 func TestPageIntent(t *testing.T) {
 	for in, want := range map[string]bool{
 		"How long do I boil the pasta on this page?": true, "What's this page about?": true, "summarize this": true,
-		"What's playing?": true, "what is on the screen": true, "Click next recipe.": false, "next page please": false,
+		"What's playing?": false, "what is on the screen": true, "Click next recipe.": false, "next page please": false,
 		"open youtube": false,
 	} {
 		got := false

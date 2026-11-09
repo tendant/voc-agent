@@ -30,7 +30,9 @@ var fastCommands = []fastCommand{
 	{phrase(`pause|pause (?:it|the video|the music|this)|stop (?:it|the video|the music)|hold on`), "media", `{"action":"pause"}`, "Paused.", nil},
 	{phrase(`resume|unpause|continue|play|play (?:it|again)|keep playing|resume (?:the )?(?:video|music)`), "media", `{"action":"play"}`, "Playing.", nil},
 	{phrase(`next|skip|next (?:video|song|one|track)|skip (?:this|it|this one|this video|this song)`), "media", `{"action":"next"}`, "Next one.", nil},
-	{phrase(`mute|mute (?:it|the video|the sound)`), "media", `{"action":"mute"}`, "Muted.", nil},
+	{phrase(`previous|previous (?:song|track|one)|last song|go back a song|play the previous (?:song|track)`), "media", `{"action":"previous"}`, "Previous one.", nil},
+	{phrase(`what'?s playing|what is playing|what song is this|what'?s this song|who sings this|what am i listening to`), "media", `{"action":"status"}`, "", nil},
+	{phrase(`mute|mute (?:it|the video|the sound|the music)`), "media", `{"action":"mute"}`, "Muted.", nil},
 	{phrase(`unmute|unmute (?:it|the video)|sound on`), "media", `{"action":"unmute"}`, "Unmuted.", nil},
 	{phrase(`louder|volume up|turn it up|turn up the volume|turn the volume up`), "media", `{"action":"louder"}`, "Louder.", nil},
 	{phrase(`quieter|softer|volume down|turn it down|turn down the volume|turn the volume down`), "media", `{"action":"quieter"}`, "Quieter.", nil},
@@ -120,9 +122,26 @@ func matchOne(user string) *fastCommand {
 func fastReply(c *fastCommand, ok bool, result json.RawMessage) string {
 	if ok {
 		var r struct {
-			Ad bool `json:"ad"`
+			Ad     bool   `json:"ad"`
+			Name   string `json:"name"`
+			Artist string `json:"artist"`
+			Title  string `json:"title"`
+			State  string `json:"state"`
 		}
 		json.Unmarshal(result, &r)
+		if c.ok == "" { // status: say what's playing
+			switch {
+			case r.Name != "" && r.Artist != "":
+				return "That's " + r.Name + " by " + r.Artist + "."
+			case r.Name != "":
+				return "That's " + r.Name + "."
+			case r.Title != "":
+				return "That's " + strings.TrimSuffix(r.Title, " - YouTube") + "."
+			case r.State == "not running":
+				return "Nothing is playing."
+			}
+			return "I can't tell what's playing."
+		}
 		if r.Ad && c.tool == "media" {
 			return c.ok + " An ad is playing; the video starts after it."
 		}

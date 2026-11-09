@@ -24,7 +24,8 @@ func TestMatchFast(t *testing.T) {
 		"search for garlic bread on this page": `page_type {"submit":true,"text":"garlic bread"}`,
 		// Not commands: they need the model.
 		"Play lo-fi jazz.": "", "play the second video": "", "scroll to the recipe for soup": "",
-		"go back to the previous video and pause it": "", "What's playing?": "", "Pause my reminders": "",
+		"go back to the previous video and pause it": "", "Pause my reminders": "",
+		"What's playing?": `media {"action":"status"}`, "last song": `media {"action":"previous"}`,
 	} {
 		got := ""
 		if c := matchFast(in); c != nil {
@@ -128,6 +129,8 @@ func TestTerseClaims(t *testing.T) {
 func TestMatchFastAll(t *testing.T) {
 	for in, want := range map[string]string{
 		"Go back. Go back.":          "back back",
+		"previous song":              "previous",
+		"what's playing":             "status",
 		"next, next":                 "next next",
 		"scroll down twice":          "scroll_down scroll_down",
 		"next and then pause":        "next pause",
@@ -140,6 +143,35 @@ func TestMatchFastAll(t *testing.T) {
 		}
 		if strings.Join(got, " ") != want {
 			t.Errorf("%q: %q want %q", in, strings.Join(got, " "), want)
+		}
+	}
+}
+
+func TestStatusReply(t *testing.T) {
+	c := matchFast("what's playing")
+	for res, want := range map[string]string{
+		`{"state":"playing","name":"So What","artist":"Miles Davis"}`: "That's So What by Miles Davis.",
+		`{"source":"browser","title":"Lo-fi beats - YouTube"}`:        "That's Lo-fi beats.",
+		`{"state":"not running"}`:                                     "Nothing is playing.",
+	} {
+		if got := fastReply(c, true, []byte(res)); got != want {
+			t.Errorf("%s: %q", res, got)
+		}
+	}
+}
+
+func TestNoteClaims(t *testing.T) {
+	for s, want := range map[string]string{
+		"I've saved a note called groceries.": "apple_notes_create", "Your note has been saved.": "",
+		"Saved a new note.": "apple_notes_create", "Your note is saved in Notes.": "apple_notes_create",
+		"You have a note about groceries.": "",
+	} {
+		got := unbackedClaim(s, map[string]bool{})
+		if s == "Your note has been saved." {
+			want = "apple_notes_create"
+		}
+		if got != want {
+			t.Errorf("%q: %q want %q", s, got, want)
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/v2/option"
 
 	"github.com/tendant/voc-agent/internal/agent"
+	"github.com/tendant/voc-agent/internal/apple"
 	browserpkg "github.com/tendant/voc-agent/internal/browser"
 	"github.com/tendant/voc-agent/internal/cloud"
 	"github.com/tendant/voc-agent/internal/llm"
@@ -43,6 +45,7 @@ func main() {
 	apps := flag.String("apps", strings.Join(tools.DefaultApps, ","), "comma-separated apps voc may open")
 	wakeWord := flag.String("wake-word", server.DefaultWakeWord, "hands-free: name that wakes voc after it falls asleep (\"Hey Victor\")")
 	sleepAfter := flag.Duration("sleep-after", 10*time.Second, "hands-free: fall asleep after this long without you talking; 0 = never")
+	appleApps := flag.Bool("apple", runtime.GOOS == "darwin", "let voc use Apple Notes (search, read, create) and Music (play from your library, control); macOS asks for permission on first use")
 	agentBrowser := flag.Bool("agent-browser", true, "use voc's own Chrome window for web pages, so it can play videos, read and click (needs Google Chrome)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -108,6 +111,20 @@ func main() {
 		toolset = append(toolset, tools.Desktop(st, opener, allowed)...)
 		log.Info("desktop actions enabled", "browser", cmp.Or(*browser, "default"), "apps", len(allowed), "agent_browser", agentB != nil)
 	}
+	var music *apple.Music
+	if *appleApps {
+		if apple.Available("Notes") {
+			toolset = append(toolset, tools.AppleNotes(st, apple.Notes{R: apple.Osascript{}})...)
+		}
+		if apple.Available("Music") {
+			music = &apple.Music{R: apple.Osascript{}}
+			toolset = append(toolset, tools.AppleMusic(st, music)...)
+		}
+		log.Info("apple apps enabled", "notes", apple.Available("Notes"), "music", music != nil)
+	}
+	if agentB != nil || music != nil {
+		toolset = append(toolset, tools.Media(agentB, music)) // pause/next/… for whatever plays
+	}
 	cl, cloudStatus := setupCloud(*cloudMode, *cloudModel)
 	if cl != nil {
 		toolset = append(toolset, tools.Escalate(st, cl))
@@ -128,8 +145,10 @@ func main() {
 	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus,
 		NewSegmenter: func() (voice.Segmenter, error) { return voice.NewSherpaSegmenter(m) },
 		WakeWord:     *wakeWord, SleepAfter: *sleepAfter}
-	if agentB != nil {
-		srv.MediaPlaying = func() bool { return agentB.Playing(context.Background()) }
+	if agentB != nil || music != nil {
+		srv.MediaPlaying = func() bool {
+			return (agentB != nil && agentB.Playing(context.Background())) || (music != nil && music.Playing(context.Background()))
+		}
 	}
 	sess.Approver = srv.Approve
 	sched.CanDeliver, sched.Deliver = srv.Listening, srv.Notify
