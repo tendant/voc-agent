@@ -166,3 +166,9 @@ that nothing but loopback is used; `make demo-reset` clears state between runs.
 
 Speech runs in-process through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx):
 SenseVoiceSmall for ASR, Silero for VAD, and Piper (lessac, medium) for TTS.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The speech models downloaded by `make models`
+(SenseVoice, Silero VAD, Piper voices) and the LLMs you run in Ollama come
+with their own licenses.
