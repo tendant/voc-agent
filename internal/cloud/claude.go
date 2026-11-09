@@ -118,7 +118,9 @@ func verify(req *http.Request, next option.MiddlewareNext) (*http.Response, erro
 		req.Body = io.NopCloser(bytes.NewReader(b))
 		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
 	}
-	if !sameRequest(body, sc.approved) {
+	// approved == nil is an automatic request (goal-mode planning): there is
+	// no per-request approval, but the guard below still runs on the real bytes.
+	if sc.approved != nil && !sameRequest(body, sc.approved) {
 		return nil, ErrMismatch
 	}
 	if sc.guard != nil {

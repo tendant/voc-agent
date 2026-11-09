@@ -57,9 +57,17 @@ jazz".
   3 reminders (5 if you asked for reminders), 3 minutes. "Stop" cancels.
 - **Resume:** every task is journaled. If voc is restarted mid-task, say
   "continue my last task"; finished actions aren't repeated.
-- **Planner:** the local model plans (Qwen3-8B with thinking), so it takes
-  10–40 s per goal and plans vary run to run. Tools always run on your
-  machine.
+- **Planner:**
+  - With an Anthropic key (`ANTHROPIC_API_KEY`, or in `.env`), Claude plans
+    (`-planner=auto|claude|local`). It costs a few cents per task.
+  - Each planning request leaves out local-only notes, redacts personal
+    details, and is checked again at send time. If it would contain
+    local-only text, that call runs on the local model instead.
+  - Every request is in the Outbound log. There is no per-request approval.
+  - Without a key, or offline, the local model plans: slower and less
+    reliable.
+- **Always local:** tools always run on your machine; only the planning
+  happens in the cloud.
 
 ### Apple Notes and Music
 

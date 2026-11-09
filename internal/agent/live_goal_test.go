@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/tendant/voc-agent/internal/apple"
+	"github.com/tendant/voc-agent/internal/cloud"
 	"github.com/tendant/voc-agent/internal/llm"
+	"github.com/tendant/voc-agent/internal/policy"
 	"github.com/tendant/voc-agent/internal/store"
 	"github.com/tendant/voc-agent/internal/tools"
 )
@@ -32,14 +34,24 @@ func TestLiveGoals(t *testing.T) {
 	ol := &llm.Ollama{BaseURL: "http://127.0.0.1:11434", Model: "qwen3:latest", Temperature: 0.3, KeepAlive: "30m"}
 	var plans []string
 	var planner llm.Chat
-	thinks := true
+	thinks, inCloud := true, false
 	switch m := os.Getenv("VOC_PLANNER"); m {
 	case "":
+	case "claude": // real Claude via ../../.env; local fallback
+		loadEnvFile(t, "../../.env")
+		c := cloud.New("")
+		p := &cloud.Planner{C: c, Guard: func(b []byte) error {
+			private, _ := st.NotesWithPrivacy(ctx, store.LocalOnly)
+			return policy.NewFingerprints(private).CheckOutbound(b)
+		}, Audit: func(sent cloud.Sent, reply string, err error) {
+			t.Logf("      CLAUDE %d bytes sent, err=%v", len(sent.Body), err)
+		}}
+		planner, inCloud = llm.Fallback{Primary: p, Secondary: ol, OnFallback: func(err error) { t.Logf("      FALLBACK %v", err) }}, true
 	default: // e.g. qwen3-coder:30b
 		planner, thinks = &llm.Ollama{BaseURL: ol.BaseURL, Model: m, Temperature: 0.2, KeepAlive: "30m"}, os.Getenv("VOC_PLANNER_THINKS") != ""
 	}
 	s := &Session{LLM: ol, TTS: fakeTTS{}, Tools: reg, Recall: StoreRecall(st), Tasks: st, PlanFast: os.Getenv("VOC_PLAN_FAST") != "",
-		Planner: planner, PlannerThinks: thinks,
+		Planner: planner, PlannerThinks: thinks, PlannerCloud: inCloud,
 		Approver: func(_ context.Context, _ uint32, _ Sink, req tools.ApprovalRequest) (bool, error) {
 			plans = append(plans, req.Prompt)
 			return true, nil
@@ -105,5 +117,19 @@ func TestLiveGoals(t *testing.T) {
 	rems, _ := st.PendingReminders(ctx)
 	for _, r := range rems {
 		t.Logf("REMINDER %q %s", r.Text, r.DueAt.Format("Mon 3:04 PM"))
+	}
+}
+
+// loadEnvFile sets KEY=VALUE lines from path (values never logged).
+func loadEnvFile(t *testing.T, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Skip("no " + path)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(line), "export "), "=")
+		if ok && !strings.HasPrefix(k, "#") && os.Getenv(strings.TrimSpace(k)) == "" {
+			os.Setenv(strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`))
+		}
 	}
 }

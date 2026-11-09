@@ -13,9 +13,11 @@ import (
 // Reply as the answer and records every request body it receives.
 type FakeAPI struct {
 	Reply string
-	mu    sync.Mutex
-	got   [][]byte
-	srv   *httptest.Server
+	// Replies, if set, are used in order (then Reply).
+	Replies []string
+	mu      sync.Mutex
+	got     [][]byte
+	srv     *httptest.Server
 }
 
 func NewFakeAPI(reply string) *FakeAPI {
@@ -38,6 +40,10 @@ func (f *FakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	f.got = append(f.got, b)
+	reply := f.Reply
+	if len(f.Replies) > 0 {
+		reply, f.Replies = f.Replies[0], f.Replies[1:]
+	}
 	f.mu.Unlock()
 	var req struct {
 		Model string `json:"model"`
@@ -52,7 +58,7 @@ func (f *FakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		"id": "msg_fake", "type": "message", "role": "assistant", "model": req.Model, "content": []any{},
 		"stop_reason": nil, "usage": map[string]any{"input_tokens": 10, "output_tokens": 0}}})
 	ev("content_block_start", map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
-	ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": f.Reply}})
+	ev("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": reply}})
 	ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 	ev("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 5}})
 	ev("message_stop", map[string]any{"type": "message_stop"})

@@ -15,7 +15,7 @@ func StoreRecall(st *store.Store) func(context.Context, string) ([]Recalled, err
 		}
 		out := make([]Recalled, len(ns))
 		for i, n := range ns {
-			out[i] = Recalled{Path: n.Path, Title: n.Title, Body: n.Body}
+			out[i] = Recalled{Path: n.Path, Title: n.Title, Body: n.Body, Privacy: n.Privacy}
 		}
 		return out, nil
 	}

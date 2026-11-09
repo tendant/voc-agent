@@ -45,9 +45,10 @@ type Sink interface {
 
 // Recalled is a note given to the model as context.
 type Recalled struct {
-	Path  string `json:"path"`
-	Title string `json:"title"`
-	Body  string `json:"-"`
+	Path    string `json:"path"`
+	Title   string `json:"title"`
+	Body    string `json:"-"`
+	Privacy string `json:"-"` // store.LocalOnly notes never go to a cloud planner
 }
 
 // Memory persists the conversation across restarts.
@@ -224,6 +225,9 @@ type Session struct {
 	// nil uses LLM. PlannerThinks says whether it supports thinking.
 	Planner       llm.Chat
 	PlannerThinks bool
+	// PlannerCloud: the planner is a cloud model, so local_only notes are
+	// left out of what goal mode gives it.
+	PlannerCloud bool
 
 	ackOnce  sync.Once
 	ackAudio voice.Audio
@@ -347,7 +351,7 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 
 	msgs := append([]llm.Message{{Role: "system", Content: s.systemPrompt()}}, s.History()...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: user})
-	goalNotes := "" // recalled notes, also given to goal mode
+	goalNotes := "" // recalled notes for goal mode, minus local_only ones when planning in the cloud
 	if s.Recall != nil {
 		notes, err := s.Recall(ctx, user)
 		if err != nil {
@@ -363,7 +367,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			msgs = append(msgs, llm.Message{Role: "system", Content: b.String()})
 			var g strings.Builder
 			for _, n := range notes {
-				fmt.Fprintf(&g, "\n--- Note: %s ---\n%s\n", n.Title, strings.TrimSpace(n.Body))
+				if !s.PlannerCloud || n.Privacy != store.LocalOnly {
+					fmt.Fprintf(&g, "\n--- Note: %s ---\n%s\n", n.Title, strings.TrimSpace(n.Body))
+				}
 			}
 			goalNotes = g.String()
 			res, _ := json.Marshal(notes)

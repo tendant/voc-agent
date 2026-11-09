@@ -23,6 +23,7 @@ import (
 	browserpkg "github.com/tendant/voc-agent/internal/browser"
 	"github.com/tendant/voc-agent/internal/cloud"
 	"github.com/tendant/voc-agent/internal/llm"
+	"github.com/tendant/voc-agent/internal/policy"
 	"github.com/tendant/voc-agent/internal/reminders"
 	"github.com/tendant/voc-agent/internal/server"
 	"github.com/tendant/voc-agent/internal/store"
@@ -45,9 +46,11 @@ func main() {
 	apps := flag.String("apps", strings.Join(tools.DefaultApps, ","), "comma-separated apps voc may open")
 	wakeWord := flag.String("wake-word", server.DefaultWakeWord, "hands-free: name that wakes voc after it falls asleep (\"Hey Victor\")")
 	sleepAfter := flag.Duration("sleep-after", 10*time.Second, "hands-free: fall asleep after this long without you talking; 0 = never")
+	plannerMode := flag.String("planner", "auto", "goal-mode planner: auto (Claude when an Anthropic key is set, else local), local, or claude")
 	appleApps := flag.Bool("apple", runtime.GOOS == "darwin", "let voc use Apple Notes (search, read, create) and Music (play from your library, control); macOS asks for permission on first use")
 	agentBrowser := flag.Bool("agent-browser", true, "use voc's own Chrome window for web pages, so it can play videos, read and click (needs Google Chrome)")
 	flag.Parse()
+	loadDotEnv(".env") // e.g. ANTHROPIC_API_KEY=… (git-ignored)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	m := voice.ModelPaths{Dir: *models}
@@ -140,6 +143,7 @@ func main() {
 		}
 	}
 	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st), Tasks: st}
+	setupPlanner(sess, *plannerMode, *cloudModel, ol, st, log)
 	if n, err := st.MarkInterrupted(ctx); err == nil && n > 0 {
 		log.Info("tasks cut off by the last shutdown; say \"continue my last task\" to resume", "count", n)
 	}
@@ -200,4 +204,66 @@ func setupCloud(mode, model string) (*cloud.Claude, server.CloudStatus) {
 	}
 	c := cloud.New(model)
 	return c, server.CloudStatus{Enabled: true, Model: c.Model, Destination: c.Destination()}
+}
+
+// setupPlanner picks goal mode's planner. Claude plans with no per-request
+// approval (the user's choice), but local_only notes are excluded, personal
+// identifiers redacted, every request checked at send time for local_only
+// text and written to the audit log; on any failure the call falls back to
+// the local model.
+func setupPlanner(sess *agent.Session, mode, model string, local llm.Chat, st *store.Store, log *slog.Logger) {
+	hasKey := os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("ANTHROPIC_AUTH_TOKEN") != ""
+	switch {
+	case mode == "local", mode == "auto" && !hasKey:
+		log.Info("goal planner: local", "why", map[bool]string{true: "-planner=local", false: "no ANTHROPIC_API_KEY"}[mode == "local"])
+		return
+	case mode != "auto" && mode != "claude":
+		log.Warn("unknown -planner; using local", "planner", mode)
+		return
+	}
+	c := cloud.New(model)
+	p := &cloud.Planner{C: c,
+		Guard: func(body []byte) error {
+			private, err := st.NotesWithPrivacy(context.Background(), store.LocalOnly)
+			if err != nil {
+				return err
+			}
+			return policy.NewFingerprints(private).CheckOutbound(body)
+		},
+		Audit: func(sent cloud.Sent, reply string, err error) {
+			e := store.AuditEntry{TurnKey: "goal", Decision: "auto", Destination: c.Destination(), Model: c.Model,
+				Reason: "goal mode planning", Sent: string(sent.Body), SentSHA256: sent.SHA256, Response: reply}
+			if err != nil {
+				e.Decision, e.Detail = "error", err.Error()
+				if sent.Body == nil {
+					e.Decision = "blocked" // nothing left the machine
+				}
+			}
+			st.AddAudit(context.Background(), e)
+		}}
+	sess.Planner = llm.Fallback{Primary: p, Secondary: local, OnFallback: func(err error) {
+		log.Warn("goal planner: Claude failed, using local model for this step", "err", err)
+	}}
+	sess.PlannerThinks, sess.PlannerCloud = true, true
+	log.Info("goal planner: Claude (falls back to local)", "model", c.Model)
+}
+
+// loadDotEnv sets variables from a KEY=VALUE file without overriding ones
+// already set. Values are never logged.
+func loadDotEnv(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(strings.TrimPrefix(line, "export "), "=")
+		k, v = strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`)
+		if ok && k != "" && os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
 }

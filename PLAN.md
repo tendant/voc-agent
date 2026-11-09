@@ -360,10 +360,18 @@ once, re-plans once, and gives a report checked against the results.
   prompts:** consecutive same-tool steps are merged, reminders are capped,
   and Apple Notes tools are offered only when the goal mentions them.
 
-Local planner (Qwen3-8B), 4 live goals: 18–41 s per goal with thinking, and
-once past the 3-minute budget; plans varied run to run (5–6 reminders in
-some runs, the wrong day for "at 8 pm"). Without thinking it was faster but
-made more errors.
+Planner comparison on 4 live goals:
+- **Qwen3-8B with thinking:** 18–41 s per goal, and once ran past the 3-minute
+  budget. Plans were inconsistent (5–6 reminders some runs, the wrong day for
+  "at 8 pm").
+- **Qwen3-8B without thinking:** faster, but made more errors.
+- **Claude Opus 5.5:** 2.5–16 s per goal, sensible plans with well-chosen
+  reminder times, and it declined the impossible goal with an explanation.
+  The user chose Claude with no per-request approval. Each request redacts
+  personal details, excludes local-only notes, gets a fingerprint check on
+  the real bytes, and is audited. Any failure falls back to the local model,
+  and in the live run two Maya-goal requests that would have carried
+  local-only text fell back.
 
 ## WebSocket protocol
 
