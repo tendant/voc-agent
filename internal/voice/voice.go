@@ -65,3 +65,15 @@ func FloatToPCM16(s []float32) []byte {
 	}
 	return out
 }
+
+// Segmenter splits a continuous audio stream into utterances (hands-free
+// listening). Not safe for concurrent use; one per stream.
+type Segmenter interface {
+	// Accept feeds samples and returns utterances that have just ended.
+	Accept(samples []float32) [][]float32
+	// Speaking reports whether speech is in progress right now.
+	Speaking() bool
+	// Reset drops any partial utterance (e.g. while the assistant talks).
+	Reset()
+	Close()
+}

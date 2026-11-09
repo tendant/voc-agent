@@ -57,6 +57,18 @@ under `notes/private/`, or with `privacy: local_only` front matter, never
 leave the device. Every decision and the exact bytes sent are in the
 "Outbound log" (`/api/audit`).
 
+### Hands-free listening
+
+Click **Hands-free** (next to the text box) to stop holding the button. The
+mic streams continuously and the server ends an utterance after about 0.7 s
+of silence. Say "stop listening" (or click again) to turn it off.
+- **Half-duplex:** voc doesn't hear you while it is talking (the mic is muted
+  during its speech plus 0.35 s), so you can't talk over it yet.
+- **No wake word:** anything said near the mic is processed. Noise, empty
+  transcripts and filler ("um", "hmm") are ignored, but conversation in the
+  room will get answers. Audio never leaves the machine.
+- Push-to-talk (button or space bar) still works while it is on.
+
 Notes are the Markdown/text files under `./notes` (sample notes included;
 point `-notes` at your own folder). They are re-indexed every 2 s. Reminders,
 tool calls, and conversation history live in `voc.db` (SQLite).

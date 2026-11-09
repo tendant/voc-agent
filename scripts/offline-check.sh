@@ -7,6 +7,7 @@
 #   CLOUD=off scripts/offline-check.sh  # no cloud tool at all
 #   WAIT_REMINDER=0 scripts/offline-check.sh   # skip the 1-minute reminder wait
 #   VOC_FLAGS="-desktop=false" scripts/offline-check.sh   # extra server flags
+#   REHEARSE_FLAGS=-handsfree scripts/offline-check.sh     # rehearse hands-free listening
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,7 +33,7 @@ grep -q "llm ready" "$WORK/server.log" || { echo "server did not become ready"; 
 SAMPLER=$!
 
 status=0
-./bin/rehearse -url "ws://127.0.0.1:$PORT/ws" -wait-reminder "${WAIT_REMINDER:-75s}" || status=$?
+./bin/rehearse -url "ws://127.0.0.1:$PORT/ws" -wait-reminder "${WAIT_REMINDER:-75s}" ${REHEARSE_FLAGS:-} || status=$?
 
 kill "$SAMPLER" 2>/dev/null || true
 echo

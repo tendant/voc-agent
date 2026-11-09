@@ -40,6 +40,7 @@ func main() {
 	url := flag.String("url", "ws://127.0.0.1:8080/ws", "voc server WebSocket URL")
 	models := flag.String("models", "models", "model directory (for Piper)")
 	waitReminder := flag.Duration("wait-reminder", 75*time.Second, "how long to wait for the 1-minute reminder to fire (0 to skip)")
+	handsFree := flag.Bool("handsfree", false, "use hands-free listening: one continuous mic stream, no push-to-talk")
 	flag.Parse()
 
 	tts, err := voice.NewSherpaTTS(voice.ModelPaths{Dir: *models})
@@ -57,17 +58,30 @@ func main() {
 	defer c.CloseNow()
 	c.SetReadLimit(16 << 20)
 
+	// In hands-free mode the "mic" is a single continuous stream: speech is
+	// followed by silence, and the server decides where utterances end.
+	silence := voice.FloatToPCM16(make([]float32, voice.SampleRate*12/10)) // 1.2 s
+	if *handsFree {
+		c.Write(ctx, websocket.MessageText, []byte(`{"type":"listen_start"}`))
+		c.Write(ctx, websocket.MessageBinary, silence)
+	}
 	speak := func(text string) {
 		a, err := tts.Synthesize(text)
 		if err != nil {
 			log.Fatal(err)
 		}
 		pcm := voice.FloatToPCM16(voice.Resample(a.Samples, a.SampleRate, voice.SampleRate))
-		c.Write(ctx, websocket.MessageText, []byte(`{"type":"ptt_start"}`))
+		if *handsFree {
+			pcm = append(pcm, silence...)
+		} else {
+			c.Write(ctx, websocket.MessageText, []byte(`{"type":"ptt_start"}`))
+		}
 		for i := 0; i < len(pcm); i += 640 {
 			c.Write(ctx, websocket.MessageBinary, pcm[i:min(i+640, len(pcm))])
 		}
-		c.Write(ctx, websocket.MessageText, []byte(`{"type":"ptt_end"}`))
+		if !*handsFree {
+			c.Write(ctx, websocket.MessageText, []byte(`{"type":"ptt_end"}`))
+		}
 	}
 
 	failures, reprompts := 0, 0
@@ -94,6 +108,8 @@ func main() {
 			switch e.Type {
 			case "turn_start":
 				turn = e.Turn
+			case "ignored":
+				fmt.Printf("    IGNORED %q\n", e.Text)
 			case "transcript":
 				fmt.Printf("    HEARD %q\n", e.Text)
 			case "recall":

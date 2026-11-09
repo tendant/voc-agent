@@ -250,6 +250,26 @@ Latency note: a rehearsal right after this change averaged 2.3–2.5 s (worst
 (2.37 s), so the slowdown came from the machine's state at the time (the
 browser and window server were busy), not from the change.
 
+### Post-MVP: hands-free listening — ✅ 2026-11-08
+
+An opt-in toggle, not a wake word. The browser streams the mic and a
+per-connection Silero segmenter on the server ends utterances after 0.7 s of
+silence. Each utterance is transcribed before any turn starts, so noise,
+filler and "stop listening" never become turns, and "approve"/"cancel"
+answer a pending approval. Half-duplex: the client mutes the mic while voc
+speaks, plus 0.35 s. `make offline-check` with `REHEARSE_FLAGS=-handsfree`
+runs the whole demo as one continuous stream: 7/7 turns, voice approvals
+included.
+
+Fix found along the way, which helps push-to-talk too: Silero marks speech
+as starting a little late, so the first word was clipped ("Stop listening"
+→ "listening", "Ask the cloud" → "the cloud"). Utterances now start 0.3 s
+before the detected onset and end 0.2 s after.
+
+Not done: a wake word (sherpa-onnx has keyword spotting), barge-in (talking
+over voc needs echo cancellation that can be trusted), and auto-off after
+idle time.
+
 ## WebSocket protocol
 
 | Direction | Message |

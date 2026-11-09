@@ -185,6 +185,16 @@ func NewSherpaVAD(m ModelPaths) (VAD, error) {
 	return &sherpaVAD{vad: v}, nil
 }
 
+// Silero marks speech as starting a little after the first word does, so
+// segments are widened by this much on each side; without it short leading
+// words get lost ("Stop listening" → "listening", "Ask the cloud" → "the cloud").
+const (
+	preRoll  = SampleRate * 3 / 10 // 0.3 s
+	postRoll = SampleRate / 5      // 0.2 s
+)
+
+// Trim returns one contiguous span from just before the first detected speech
+// to just after the last, so pauses inside the utterance are kept.
 func (v *sherpaVAD) Trim(samples []float32) []float32 {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -196,12 +206,19 @@ func (v *sherpaVAD) Trim(samples []float32) []float32 {
 		v.vad.AcceptWaveform(samples[i:min(i+vadWindow, len(samples))])
 	}
 	v.vad.Flush()
-	var out []float32
+	first, last := -1, -1
 	for !v.vad.IsEmpty() {
-		out = append(out, v.vad.Front().Samples...)
+		f := v.vad.Front()
+		if first < 0 {
+			first = f.Start
+		}
+		last = f.Start + len(f.Samples)
 		v.vad.Pop()
 	}
-	return out
+	if first < 0 {
+		return nil
+	}
+	return samples[max(0, first-preRoll):min(len(samples), last+postRoll)]
 }
 
 func (v *sherpaVAD) Close() {
@@ -212,3 +229,78 @@ func (v *sherpaVAD) Close() {
 		v.vad = nil
 	}
 }
+
+// --- streaming segmentation ---
+
+type sherpaSegmenter struct {
+	vad     *sherpa.VoiceActivityDetector
+	buf     []float32 // samples not yet a full VAD window
+	hist    []float32 // recent stream audio, for pre-roll
+	histPos int       // stream index of hist[0]
+	fed     int       // samples given to the VAD since the last reset
+}
+
+// maxHist bounds the pre-roll history (longest utterance plus margin).
+const maxHist = 35 * SampleRate
+
+// SegmentSilence is how long a pause ends an utterance in hands-free mode.
+// Longer than push-to-talk trimming so a breath mid-sentence doesn't split it.
+const SegmentSilence = 0.7
+
+// NewSherpaSegmenter loads a dedicated Silero VAD for one audio stream.
+func NewSherpaSegmenter(m ModelPaths) (Segmenter, error) {
+	if err := mustExist(m.silero()); err != nil {
+		return nil, err
+	}
+	cfg := sherpa.VadModelConfig{SampleRate: SampleRate, NumThreads: 1, Provider: "cpu"}
+	cfg.SileroVad = sherpa.SileroVadModelConfig{
+		Model: m.silero(), Threshold: 0.5, MinSilenceDuration: SegmentSilence,
+		MinSpeechDuration: 0.3, WindowSize: vadWindow, MaxSpeechDuration: 30,
+	}
+	v := sherpa.NewVoiceActivityDetector(&cfg, 60)
+	if v == nil {
+		return nil, errors.New("sherpa: failed to create Silero VAD")
+	}
+	return &sherpaSegmenter{vad: v}, nil
+}
+
+func (s *sherpaSegmenter) Accept(samples []float32) [][]float32 {
+	s.buf = append(s.buf, samples...)
+	var out [][]float32
+	for len(s.buf) >= vadWindow {
+		win := s.buf[:vadWindow]
+		s.hist = append(s.hist, win...)
+		s.vad.AcceptWaveform(win)
+		s.fed += vadWindow
+		s.buf = s.buf[vadWindow:]
+		for !s.vad.IsEmpty() {
+			f := s.vad.Front()
+			// Widen with audio from just before the detected start.
+			from := max(f.Start-preRoll, s.histPos)
+			to := min(f.Start+len(f.Samples)+postRoll, s.histPos+len(s.hist))
+			if f.Start < s.histPos || from >= to {
+				out = append(out, f.Samples) // positions don't line up; use as is
+			} else {
+				out = append(out, append([]float32(nil), s.hist[from-s.histPos:to-s.histPos]...))
+			}
+			s.vad.Pop()
+		}
+	}
+	if n := len(s.hist) - maxHist; n > 0 {
+		s.hist = append([]float32(nil), s.hist[n:]...)
+		s.histPos += n
+	}
+	if len(s.buf) == 0 {
+		s.buf = nil // let the backing array go
+	}
+	return out
+}
+
+func (s *sherpaSegmenter) Speaking() bool { return s.vad.IsSpeech() }
+
+func (s *sherpaSegmenter) Reset() {
+	s.vad.Reset()
+	s.buf, s.hist, s.histPos, s.fed = nil, nil, 0, 0
+}
+
+func (s *sherpaSegmenter) Close() { sherpa.DeleteVoiceActivityDetector(s.vad) }

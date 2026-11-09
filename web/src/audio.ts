@@ -5,6 +5,8 @@ export class Mic {
   private node?: AudioWorkletNode
   private stream?: MediaStream
   onFrame: (pcm: ArrayBuffer) => void = () => {}
+  /** Drop frames while true, e.g. while voc is speaking, so it doesn't hear itself. */
+  muted = false
 
   /** Opens the mic once; later start/stop calls only toggle frame delivery. */
   async open() {
@@ -25,7 +27,7 @@ export class Mic {
       await this.ctx.audioWorklet.addModule('/pcm-capture.js')
       const src = this.ctx.createMediaStreamSource(this.stream)
       this.node = new AudioWorkletNode(this.ctx, 'pcm-capture')
-      this.node.port.onmessage = (e) => this.live && this.onFrame(e.data as ArrayBuffer)
+      this.node.port.onmessage = (e) => this.live && !this.muted && this.onFrame(e.data as ArrayBuffer)
       src.connect(this.node)
     } catch (err) {
       this.stream?.getTracks().forEach((t) => t.stop())

@@ -109,7 +109,8 @@ func main() {
 	sess := &agent.Session{LLM: ol, TTS: tts, Tools: reg, Memory: st, Recall: agent.StoreRecall(st)}
 	fatal(log, sess.Restore(ctx))
 
-	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus}
+	srv := &server.Server{ASR: asr, VAD: vad, TTS: tts, Agent: sess, Store: st, OnConnect: sched.Wake, Log: log, Cloud: cloudStatus,
+		NewSegmenter: func() (voice.Segmenter, error) { return voice.NewSherpaSegmenter(m) }}
 	sess.Approver = srv.Approve
 	sched.CanDeliver, sched.Deliver = srv.Listening, srv.Notify
 	go sched.Run(ctx)

@@ -95,6 +95,12 @@ export default function App() {
   approvalRef.current = approval
   const [auditTick, setAuditTick] = useState(0)
   const [cloud, setCloud] = useState<{ enabled: boolean; model?: string; destination?: string; why?: string } | null>(null)
+  // Hands-free: the mic streams continuously and the server finds utterances.
+  const [handsFree, setHandsFree] = useState(false)
+  const handsFreeRef = useRef(false)
+  handsFreeRef.current = handsFree
+  const [hearing, setHearing] = useState(false)
+  const unmuteTimer = useRef<number | undefined>(undefined)
 
   const loadReminders = useCallback(() => {
     fetch('/api/reminders')
@@ -121,6 +127,11 @@ export default function App() {
       player.current = new Player() // created on a user gesture so autoplay is allowed
       player.current.onPlaying = (p) => {
         playing.current = p
+        // Half-duplex: don't stream the mic while voc is talking (plus a short
+        // tail for room echo), or hands-free mode would answer itself.
+        window.clearTimeout(unmuteTimer.current)
+        if (p) mic.current.muted = true
+        else unmuteTimer.current = window.setTimeout(() => (mic.current.muted = false), 350)
         setStatus((s) => (s === 'listening' ? s : p ? 'speaking' : busy.current ? 'thinking' : 'ready'))
       }
     }
@@ -134,9 +145,26 @@ export default function App() {
       const t = m.turn ?? 0
       switch (m.type) {
         case 'turn_start':
+          if (t !== turn.current) player.current?.stop() // a new turn replaces the old one's audio
           turn.current = t
           heard.current = false
           setTiming({})
+          if (handsFreeRef.current) {
+            busy.current = true
+            setStatus((s) => (s === 'listening' ? s : 'thinking'))
+          }
+          return
+        case 'speech':
+          setHearing(!!m.ok)
+          if (!m.ok) sentAt.current = performance.now() // end of speech: start the clock
+          return
+        case 'ignored':
+          return
+        case 'listen_stopped':
+          setHandsFree(false)
+          setHearing(false)
+          mic.current.stop()
+          add({ who: 'system', text: 'Hands-free listening is off.' })
           return
         case 'error':
           busy.current = false
@@ -197,6 +225,7 @@ export default function App() {
       s.onopen = () => {
         busy.current = false
         setStatus('ready')
+        if (handsFreeRef.current) s.send(JSON.stringify({ type: 'listen_start' })) // resume after reconnect
         loadReminders()
         fetch('/api/status')
           .then((r) => r.json())
@@ -267,12 +296,30 @@ export default function App() {
 
   const up = useCallback(() => {
     if (status !== 'listening') return
-    mic.current.stop()
+    if (!handsFreeRef.current) mic.current.stop() // hands-free keeps the mic streaming
     send({ type: 'ptt_end' })
     sentAt.current = performance.now()
     busy.current = true
     setStatus('thinking')
   }, [status])
+
+  const toggleHandsFree = async () => {
+    if (handsFree) {
+      send({ type: 'listen_stop' })
+      setHandsFree(false)
+      setHearing(false)
+      if (status !== 'listening') mic.current.stop()
+      return
+    }
+    getPlayer() // created on this click so replies can play
+    try {
+      await mic.current.start()
+      send({ type: 'listen_start' })
+      setHandsFree(true)
+    } catch (err) {
+      add({ who: 'system', text: `Microphone unavailable: ${(err as Error).message}` })
+    }
+  }
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -311,7 +358,7 @@ export default function App() {
 
   const label: Record<Status, string> = {
     connecting: 'Connecting…',
-    ready: 'Hold to talk',
+    ready: handsFree ? (hearing ? 'Hearing you…' : 'Listening — just talk (or hold to push-to-talk)') : 'Hold to talk',
     listening: 'Listening — release to send',
     thinking: 'Thinking… (hold to interrupt)',
     speaking: 'Speaking… (hold to interrupt)',
@@ -322,7 +369,7 @@ export default function App() {
     <main>
       <header>
         <h1>voc</h1>
-        <span className={`dot ${status}`} aria-hidden />
+        <span className={`dot ${hearing ? 'listening' : status}`} aria-hidden />
         <span className="muted">{status}</span>
         {cloud && (
           <span className={`cloud ${cloud.enabled ? 'on' : 'off'}`} title={cloud.enabled ? `${cloud.model} via ${cloud.destination}` : cloud.why}>
@@ -333,7 +380,9 @@ export default function App() {
       {approval && <ApprovalDialog req={approval} onDecide={decide} />}
 
       <section className="transcript" aria-live="polite" ref={scroller}>
-        {lines.length === 0 && <p className="muted">Hold the button (or the space bar) and speak, or type below.</p>}
+        {lines.length === 0 && (
+          <p className="muted">Hold the button (or the space bar) and speak, turn on hands-free to just talk, or type below.</p>
+        )}
         {lines.map((l) => (
           <p key={l.key} className={`${l.who}${l.ok === false ? ' bad' : ''}`}>
             {l.who !== 'tool' && <b>{{ you: 'You', assistant: 'voc', system: 'System', reminder: '⏰' }[l.who]}</b>}{' '}
@@ -345,7 +394,7 @@ export default function App() {
       </section>
 
       <button
-        className={`ptt ${status}`}
+        className={`ptt ${status}${handsFree && status === 'ready' ? ' handsfree' : ''}${hearing ? ' hearing' : ''}`}
         data-ptt
         disabled={!connected}
         onPointerDown={(e) => {
@@ -359,6 +408,16 @@ export default function App() {
       </button>
 
       <form className="compose" onSubmit={submit}>
+        <button
+          type="button"
+          className={`hf${handsFree ? ' on' : ''}`}
+          aria-pressed={handsFree}
+          onClick={() => void toggleHandsFree()}
+          disabled={!connected}
+          title="Listen all the time; say “stop listening” to turn it off"
+        >
+          {handsFree ? 'Hands-free: on' : 'Hands-free: off'}
+        </button>
         <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Or type a message…" aria-label="Message" />
         <button type="submit" disabled={!connected || !draft.trim()}>
           Send

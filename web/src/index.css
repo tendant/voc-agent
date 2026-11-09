@@ -88,3 +88,7 @@ header .cloud.on { color: var(--accent); border-color: var(--accent); }
 .warn { font-size: 14px; border: 1px solid var(--live); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; color: var(--fg); }
 .warn b { color: var(--live); }
 .warn code { margin-left: 4px; font-size: 13px; padding: 0 4px; border-radius: 4px; background: var(--bg); }
+.ptt.handsfree { background: color-mix(in srgb, var(--ok) 75%, var(--accent)); }
+.ptt.hearing { background: var(--live); }
+.compose .hf { white-space: nowrap; }
+.compose .hf.on { background: var(--ok); color: white; border-color: var(--ok); }
