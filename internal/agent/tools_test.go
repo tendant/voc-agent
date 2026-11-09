@@ -75,7 +75,9 @@ func TestTurnRunsToolsThenAnswers(t *testing.T) {
 	s2 := &Session{LLM: f, TTS: fakeTTS{}, Memory: st}
 	s2.Restore(context.Background())
 	h := s2.History()
-	if len(h) != 2 || h[1].Content != "Let me set that up. Done, I'll remind you in two hours." {
+	// user, assistant(tool calls), 2 tool results, final assistant text
+	if len(h) != 5 || len(h[1].ToolCalls) != 2 || h[2].Role != "tool" || h[2].ToolName != "create_reminder" ||
+		h[4].Content != "Done, I'll remind you in two hours." {
 		t.Fatalf("restored history: %+v", h)
 	}
 }
@@ -293,6 +295,10 @@ func TestClaimPatterns(t *testing.T) {
 		"Should I set a reminder?":                                   "",
 		"You have one reminder tomorrow.":                            "",
 		"The cloud is not available right now.":                      "",
+		"I've opened YouTube with results for lo-fi jazz.":           "web_search",
+		"Opening Calculator now.":                                    "web_search",
+		"YouTube is now open in your browser.":                       "web_search",
+		"I can open YouTube for you if you like.":                    "",
 	} {
 		if got := unbackedClaim(s, none); got != want {
 			t.Errorf("%q: %q want %q", s, got, want)
@@ -300,5 +306,8 @@ func TestClaimPatterns(t *testing.T) {
 	}
 	if unbackedClaim("I've set a reminder.", map[string]bool{"create_reminder": true}) != "" {
 		t.Error("backed claim blocked")
+	}
+	if unbackedClaim("I've opened Calculator.", map[string]bool{"open_app": true}) != "" {
+		t.Error("any tool in the group backs the claim")
 	}
 }

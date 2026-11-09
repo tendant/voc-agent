@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,7 +121,7 @@ func TestMessagesPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "voc.db")
 	s, _ := Open(path)
 	for _, c := range []string{"a", "b", "c"} {
-		s.AppendMessages(ctx, Message{"user", c}, Message{"assistant", c + "!"})
+		s.AppendMessages(ctx, Message{Role: "user", Content: c}, Message{Role: "assistant", Content: c + "!"})
 	}
 	s.Close()
 	s, _ = Open(path) // survives restart
@@ -168,5 +169,32 @@ func TestAudit(t *testing.T) {
 	got, err := s.RecentAudit(ctx, 10)
 	if err != nil || len(got) != 2 || got[0].Decision != "approved" || got[0].Sent != `{"a":1}` || string(got[1].Policy) != "{}" {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestOldDatabaseUpgrades(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The M2 messages table, before tool columns existed.
+	if _, err := raw.Exec(`CREATE TABLE messages (id INTEGER PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+		INSERT INTO messages(role, content, created_at) VALUES('user', 'hi', 1);`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.AppendMessages(ctx, Message{Role: "tool", Content: "{}", ToolName: "list_reminders"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.RecentMessages(ctx, 10)
+	if len(got) != 2 || got[0].Content != "hi" || got[1].ToolName != "list_reminders" {
+		t.Fatalf("%+v", got)
 	}
 }

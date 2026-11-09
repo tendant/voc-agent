@@ -41,6 +41,12 @@ function describeTool(name: string, args: any, result: any, ok?: boolean): strin
       return `Reminder ${result?.status === 'already_exists' ? 'already existed' : 'created'}: “${result?.reminder?.text}”, ${result?.reminder?.due}`
     case 'list_reminders':
       return `Listed ${result?.count ?? 0} upcoming reminder(s)`
+    case 'web_search':
+      return `Opened ${result?.site} search for “${result?.query}”`
+    case 'open_url':
+      return `Opened ${result?.url}`
+    case 'open_app':
+      return `Opened ${result?.app}`
     case 'ask_cloud':
       if (result?.status === 'answered') return `Cloud answered (${result?.model})`
       if (result?.status === 'blocked') return 'Blocked by privacy policy — nothing was sent'

@@ -227,6 +227,29 @@ What the rehearsal caught and fixed:
 - `make offline-check` confirms no outbound connections when cloud mode is off.
 - Rehearse once fully offline.
 
+### Post-MVP: desktop actions — ✅ 2026-11-08
+
+Typed actions, not screen control: `web_search` (youtube, google,
+wikipedia, maps, duckduckgo, github), `open_url` (public http(s) only), and
+`open_app` (allowlist). Commands run through macOS `open`. Queries and links
+containing local_only text are blocked, and "I've opened…" is
+claim-checked. Full computer use (screenshots to Claude) was considered and
+deferred: it would send screen images to the cloud.
+
+Live test (`VOC_LIVE=1 go test ./internal/agent -run LiveDesktop`): 7/7 cases
+right, including refusing "Open Terminal" without a false claim.
+
+Fix found along the way: history used to keep only reply text, so the model
+saw past turns that said "I've opened YouTube" with no tool call, imitated
+them, and stopped calling tools after three turns. History now keeps tool
+calls and results (also in SQLite; old databases are upgraded in place) and
+is trimmed only at turn boundaries.
+
+Latency note: a rehearsal right after this change averaged 2.3–2.5 s (worst
+3.4 s). The previous commit measured the same under the same conditions
+(2.37 s), so the slowdown came from the machine's state at the time (the
+browser and window server were busy), not from the change.
+
 ## WebSocket protocol
 
 | Direction | Message |

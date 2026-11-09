@@ -28,7 +28,20 @@ Try:
 - "What's the rollback plan?" / "When does the trash go out?"
 - "Remind me to stretch in two minutes." (it speaks the reminder when due)
 - "What reminders do I have?"
-- "Ask Claude to review my billing deployment plan for risks." (needs `-cloud`)
+- "Ask the cloud to review my billing deployment plan for risks." (needs `-cloud`)
+- "Open YouTube and search for lo-fi jazz." / "Open the calculator." / "Find coffee shops near me on the map."
+
+### Desktop actions
+
+voc can open web searches (YouTube, Google, Wikipedia, Maps, DuckDuckGo,
+GitHub), web pages, and allowlisted apps in your browser and on your Mac. It
+can't click or read anything on the page. Limits:
+- Only http(s) links to public sites; no `file:`, app schemes, localhost or IPs.
+- Only allowlisted apps; Terminal and System Settings are deliberately absent.
+- Searches and links containing text from `local_only` notes are blocked.
+
+Flags: `-desktop=false` to turn it off, `-browser=Firefox` to pick a browser
+(default: the system default), `-apps=...` for a different allowlist.
 
 ### Cloud escalation (optional)
 

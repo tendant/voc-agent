@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +37,9 @@ func main() {
 	notesDir := flag.String("notes", "notes", "folder of markdown/text notes to index")
 	cloudMode := flag.String("cloud", "auto", "cloud escalation: auto (on if ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN is set), on, off, or fake (local stand-in API for demos)")
 	cloudModel := flag.String("cloud-model", cloud.DefaultModel, "Claude model for escalations")
+	desktop := flag.Bool("desktop", true, "let voc open web searches, links and allowlisted apps on this computer")
+	browser := flag.String("browser", "", "browser for opened links, e.g. Firefox (default: system default browser)")
+	apps := flag.String("apps", strings.Join(tools.DefaultApps, ","), "comma-separated apps voc may open")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
@@ -77,6 +82,16 @@ func main() {
 
 	sched := (&reminders.Scheduler{Store: st, Log: log}).Init()
 	toolset := tools.Personal(st, nil, sched.Wake)
+	if *desktop {
+		var allowed []string
+		for _, a := range strings.Split(*apps, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				allowed = append(allowed, a)
+			}
+		}
+		toolset = append(toolset, tools.Desktop(st, &tools.SystemOpener{Browser: *browser}, allowed)...)
+		log.Info("desktop actions enabled", "browser", cmp.Or(*browser, "default"), "apps", len(allowed))
+	}
 	cl, cloudStatus := setupCloud(*cloudMode, *cloudModel)
 	if cl != nil {
 		toolset = append(toolset, tools.Escalate(st, cl))

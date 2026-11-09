@@ -71,7 +71,8 @@ You have tools for the user's private notes and reminders. Rules:
 2. When the user asks to be reminded of something, you must call create_reminder, passing "when" exactly as the user said it. A reminder exists only after create_reminder returns status "created" or "already_exists"; then confirm it using the "due" text it returns. If it returns an error, tell the user briefly or ask when they meant.
 3. If a request has several parts, make one tool call for each part, in order. For example: search_notes, then create_reminder.
 4. If ask_cloud is available, use it when the user asks for the cloud or Claude, or when a question needs deep reasoning or knowledge you lack. Write a self-contained question and never copy private details into it. The user approves what is sent.
-5. Never say file paths or tool names out loud.
+5. If web_search, open_url or open_app are available, use them when the user asks to open, search, watch, play or look something up in the browser or an app on this computer. After it returns, say briefly what you opened. You cannot click or read anything on the page.
+6. Never say file paths or tool names out loud.
 You cannot use a calendar, email, or the internet.`
 
 const noToolPrompt = `
@@ -98,17 +99,25 @@ var readOnlyTools = map[string]bool{"list_reminders": true}
 // Checked on every sentence before it is spoken, so a false "I've set a
 // reminder" is never said even if intent detection missed (e.g. an ASR error).
 var claims = []struct {
-	re   *regexp.Regexp
-	tool string
+	re    *regexp.Regexp
+	tools []string // any one succeeding backs the claim; the first is named in nudges
 }{
-	{regexp.MustCompile(`(?i)\b(i'?ve|i have|i(?:'ll| will)|i've gone ahead and|i went ahead and)\s+(set|created|added|scheduled|made)\b[^.!?]*\breminders?\b|\breminders? (is|has been|was) (set|created|added|scheduled)\b|\bi(?:'ll| will) remind you\b`), "create_reminder"},
-	{regexp.MustCompile(`(?i)\b(i'?ve|i have)\s+(asked|sent|checked with|consulted|forwarded)\b[^.!?]*\b(cloud|claude)\b|\b(the cloud|claude) (says|said|suggests|recommends|answered)\b`), "ask_cloud"},
+	{regexp.MustCompile(`(?i)\b(i'?ve|i have|i(?:'ll| will)|i've gone ahead and|i went ahead and)\s+(set|created|added|scheduled|made)\b[^.!?]*\breminders?\b|\breminders? (is|has been|was) (set|created|added|scheduled)\b|\bi(?:'ll| will) remind you\b`), []string{"create_reminder"}},
+	{regexp.MustCompile(`(?i)\b(i'?ve|i have)\s+(asked|sent|checked with|consulted|forwarded)\b[^.!?]*\b(cloud|claude)\b|\b(the cloud|claude) (says|said|suggests|recommends|answered)\b`), []string{"ask_cloud"}},
+	{regexp.MustCompile(`(?i)\b(i'?ve|i have|i)\s+(just\s+)?(opened|launched|started|pulled up|brought up|searched)\b|^(opened|opening|launching|searching)\b|\b(is|are) (now )?(open|opened|up) (in|on) (your|the) (browser|screen)\b`), []string{"web_search", "open_url", "open_app"}},
 }
 
 func unbackedClaim(sentence string, succeeded map[string]bool) string {
 	for _, c := range claims {
-		if !succeeded[c.tool] && c.re.MatchString(sentence) {
-			return c.tool
+		if !c.re.MatchString(sentence) {
+			continue
+		}
+		backed := false
+		for _, t := range c.tools {
+			backed = backed || succeeded[t]
+		}
+		if !backed {
+			return c.tools[0]
 		}
 	}
 	return ""
@@ -182,14 +191,30 @@ func (s *Session) Restore(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.history = s.history[:0]
 	for _, m := range msgs {
-		s.history = append(s.history, llm.Message{Role: m.Role, Content: m.Content})
+		lm := llm.Message{Role: m.Role, Content: m.Content, ToolName: m.ToolName}
+		if m.ToolCalls != "" {
+			json.Unmarshal([]byte(m.ToolCalls), &lm.ToolCalls)
+		}
+		s.history = append(s.history, lm)
+	}
+	s.history = fromTurnStart(s.history)
+	return nil
+}
+
+// fromTurnStart drops leading messages until a user message, so trimming
+// never leaves a tool result without the call it answers.
+func fromTurnStart(h []llm.Message) []llm.Message {
+	for i, m := range h {
+		if m.Role == "user" {
+			return h[i:]
+		}
 	}
 	return nil
 }
 
 func (s *Session) maxHistory() int {
 	if s.MaxHistory == 0 {
-		return 20
+		return 30
 	}
 	return s.MaxHistory
 }
@@ -222,7 +247,7 @@ func (s *Session) remember(ctx context.Context, msgs ...llm.Message) error {
 	s.mu.Lock()
 	s.history = append(s.history, msgs...)
 	if n := len(s.history) - s.maxHistory(); n > 0 {
-		s.history = append([]llm.Message(nil), s.history[n:]...)
+		s.history = fromTurnStart(append([]llm.Message(nil), s.history[n:]...))
 	}
 	s.mu.Unlock()
 	if s.Memory == nil {
@@ -230,7 +255,12 @@ func (s *Session) remember(ctx context.Context, msgs ...llm.Message) error {
 	}
 	var sm []store.Message
 	for _, m := range msgs {
-		sm = append(sm, store.Message{Role: m.Role, Content: m.Content})
+		x := store.Message{Role: m.Role, Content: m.Content, ToolName: m.ToolName}
+		if len(m.ToolCalls) > 0 {
+			b, _ := json.Marshal(m.ToolCalls)
+			x.ToolCalls = string(b)
+		}
+		sm = append(sm, x)
 	}
 	// Persist even if the turn was cancelled.
 	return s.Memory.AppendMessages(context.WithoutCancel(ctx), sm...)
@@ -278,6 +308,8 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 	// Written only by the producer goroutine; read after sentences closes.
 	var (
 		spoken          strings.Builder // everything the assistant said
+		exchange        []llm.Message   // tool calls and results, kept in history
+		finalFrom       int             // spoken text before this is already in exchange
 		llmErr          error
 		llmTTFT, llmEnd = -1, -1
 		toolMS          int
@@ -337,7 +369,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			}
 			ok := res.OK
 			sink.Event(Event{Type: "tool_result", Turn: turn, Name: tc.Function.Name, Result: res.JSON, OK: &ok, MS: map[string]int{"ms": res.MS}})
-			msgs = append(msgs, llm.Message{Role: "tool", ToolName: tc.Function.Name, Content: string(res.JSON)})
+			toolMsg := llm.Message{Role: "tool", ToolName: tc.Function.Name, Content: string(res.JSON)}
+			msgs = append(msgs, toolMsg)
+			exchange = append(exchange, toolMsg)
 			return res
 		}
 
@@ -350,7 +384,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 				// No arguments to decide: run it now instead of hoping the
 				// model will, and let the model phrase the answer.
 				tc := llm.ToolCall{Function: llm.FunctionCall{Name: r, Arguments: json.RawMessage(`{}`)}}
-				msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}})
+				callMsg := llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}}
+				msgs = append(msgs, callMsg)
+				exchange = append(exchange, callMsg)
 				runTool(tc)
 				continue
 			}
@@ -441,6 +477,8 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 				say(held)
 			}
 			msgs = append(msgs, reply)
+			exchange = append(exchange, llm.Message{Role: "assistant", Content: reply.Content, ToolCalls: reply.ToolCalls})
+			finalFrom = spoken.Len()
 			if !emitted && needsAck(reply.ToolCalls) {
 				sink.Event(Event{Type: "ack", Turn: turn, Text: ackText})
 				emit([]string{ackSentinel})
@@ -512,7 +550,15 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 		if interrupted {
 			content += " [interrupted]"
 		}
-		if err := s.remember(ctx, llm.Message{Role: "user", Content: user}, llm.Message{Role: "assistant", Content: content}); err != nil && ttsErr == nil {
+		// The final message holds only what was said after the last tool
+		// round; earlier text is already in the exchange.
+		final := strings.Join(strings.Fields(spoken.String()[finalFrom:]), " ")
+		if interrupted {
+			final += " [interrupted]"
+		}
+		turnMsgs := append([]llm.Message{{Role: "user", Content: user}}, exchange...)
+		turnMsgs = append(turnMsgs, llm.Message{Role: "assistant", Content: strings.TrimSpace(final)})
+		if err := s.remember(ctx, turnMsgs...); err != nil && ttsErr == nil {
 			ttsErr = fmt.Errorf("save history: %w", err)
 		}
 	}

@@ -40,6 +40,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+	if err := addColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := reindexIfStale(db); err != nil {
 		db.Close()
 		return nil, err
@@ -346,7 +350,14 @@ func (s *Store) LogToolCall(ctx context.Context, turnKey, name, args, result str
 	return err
 }
 
-type Message struct{ Role, Content string }
+// Message is one conversation entry. Tool calls and results are kept so the
+// model sees how earlier requests were actually carried out; with text only,
+// small models learn to answer "I've opened it" without calling the tool.
+type Message struct {
+	Role, Content string
+	ToolCalls     string // JSON array, assistant messages that called tools
+	ToolName      string // role=tool: which tool this result answers
+}
 
 func (s *Store) AppendMessages(ctx context.Context, msgs ...Message) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -355,8 +366,8 @@ func (s *Store) AppendMessages(ctx context.Context, msgs ...Message) error {
 	}
 	defer tx.Rollback()
 	for _, m := range msgs {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages(role, content, created_at) VALUES(?,?,?)`,
-			m.Role, m.Content, s.Now().Unix()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages(role, content, tool_calls, tool_name, created_at) VALUES(?,?,?,?,?)`,
+			m.Role, m.Content, m.ToolCalls, m.ToolName, s.Now().Unix()); err != nil {
 			return err
 		}
 	}
@@ -365,7 +376,8 @@ func (s *Store) AppendMessages(ctx context.Context, msgs ...Message) error {
 
 // RecentMessages returns the last n messages in chronological order.
 func (s *Store) RecentMessages(ctx context.Context, n int) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT role, content FROM (SELECT id, role, content FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id`, n)
+	rows, err := s.db.QueryContext(ctx, `SELECT role, content, tool_calls, tool_name FROM
+		(SELECT id, role, content, tool_calls, tool_name FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -373,12 +385,32 @@ func (s *Store) RecentMessages(ctx context.Context, n int) ([]Message, error) {
 	var out []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.Role, &m.Content); err != nil {
+		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCalls, &m.ToolName); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// addColumns brings older databases up to date (CREATE TABLE IF NOT EXISTS
+// doesn't add columns to an existing table).
+func addColumns(db *sql.DB) error {
+	for _, c := range []struct{ table, col, def string }{
+		{"messages", "tool_calls", "TEXT NOT NULL DEFAULT ''"},
+		{"messages", "tool_name", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.col).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.col + ` ` + c.def); err != nil {
+				return fmt.Errorf("store: add %s.%s: %w", c.table, c.col, err)
+			}
+		}
+	}
+	return nil
 }
 
 // isSmallNumber skips "1", "30" (as in "in 30 minutes") but keeps longer

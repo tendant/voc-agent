@@ -6,6 +6,7 @@
 #   scripts/offline-check.sh            # cloud via the local fake API
 #   CLOUD=off scripts/offline-check.sh  # no cloud tool at all
 #   WAIT_REMINDER=0 scripts/offline-check.sh   # skip the 1-minute reminder wait
+#   VOC_FLAGS="-desktop=false" scripts/offline-check.sh   # extra server flags
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,7 +18,7 @@ trap 'kill "${PID:-}" "${SAMPLER:-}" 2>/dev/null || true' EXIT
 go build -o bin/voc ./cmd/voc
 go build -o bin/rehearse ./cmd/rehearse
 
-./bin/voc -addr "127.0.0.1:$PORT" -db "$WORK/voc.db" -cloud="$CLOUD" >"$WORK/server.log" 2>&1 &
+./bin/voc -addr "127.0.0.1:$PORT" -db "$WORK/voc.db" -cloud="$CLOUD" ${VOC_FLAGS:-} >"$WORK/server.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 60); do
   grep -q "llm ready" "$WORK/server.log" && break
