@@ -49,6 +49,17 @@ function describeTool(name: string, args: any, result: any, ok?: boolean): strin
   return `${name} ${JSON.stringify(args)}`
 }
 
+/** Space means push-to-talk unless it has another job where focus is: typing
+ * in a field, or pressing some other button. Firefox keeps focus on a clicked
+ * button, so checking for document.body alone misses the common case. */
+function spaceIsPushToTalk(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el || el === document.body || el === document.documentElement) return true
+  if (el.isContentEditable || el.closest('input, textarea, select, [contenteditable]')) return false
+  const button = el.closest('button, a, summary, [role="button"]')
+  return !button || button.hasAttribute('data-ptt')
+}
+
 function fmtDue(iso: string) {
   const d = new Date(iso)
   return d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -273,13 +284,13 @@ export default function App() {
   // Space bar = push to talk (when not typing).
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat && e.target === document.body) {
+      if (e.code === 'Space' && !e.repeat && spaceIsPushToTalk(e.target)) {
         e.preventDefault()
         void down()
       }
     }
     const ku = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && e.target === document.body) {
+      if (e.code === 'Space' && spaceIsPushToTalk(e.target)) {
         e.preventDefault()
         up()
       }
@@ -329,6 +340,7 @@ export default function App() {
 
       <button
         className={`ptt ${status}`}
+        data-ptt
         disabled={!connected}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId)
