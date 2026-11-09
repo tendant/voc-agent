@@ -6,3 +6,4 @@ bin/
 .env
 *.db-wal
 *.db-shm
+presentation/
