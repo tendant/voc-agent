@@ -49,6 +49,12 @@ function describeTool(name: string, args: any, result: any, ok?: boolean): strin
       return `Read the page “${result?.untrusted_page_content?.title ?? ''}”`
     case 'page_click':
       return `Clicked “${result?.label}”`
+    case 'page_nav':
+      return { back: 'Went back', forward: 'Went forward', reload: 'Reloaded', scroll_down: 'Scrolled down', scroll_up: 'Scrolled up', top: 'Top of the page', bottom: 'Bottom of the page' }[result?.action as string] ?? `Page: ${result?.action}`
+    case 'page_type':
+      return `Typed into ${result?.field || 'the page'}${result?.submitted ? ' and pressed Enter' : ''}`
+    case 'page_result':
+      return `Opened result ${result?.n}: “${result?.title}”`
     case 'web_search':
       return `Opened ${result?.site} search for “${result?.query}”`
     case 'open_url':

@@ -99,3 +99,22 @@ func TestPersonalTools(t *testing.T) {
 		t.Fatalf("list: %s", res.JSON)
 	}
 }
+
+func TestToolGating(t *testing.T) {
+	type none struct{}
+	open := false
+	r := NewRegistry(
+		Typed("always", "d", func(context.Context, Call, none) (any, error) { return "ok", nil }),
+		Typed("page", "d", func(context.Context, Call, none) (any, error) { return "ok", nil }).When(func() bool { return open }),
+	)
+	if n := len(r.Specs()); n != 1 || r.Has("page") {
+		t.Fatalf("closed: %d specs, has page=%v", n, r.Has("page"))
+	}
+	if res := r.Run(context.Background(), Call{}, "page", nil); res.OK || !strings.Contains(string(res.JSON), "isn't available") {
+		t.Fatalf("ran while unavailable: %s", res.JSON)
+	}
+	open = true
+	if n := len(r.Specs()); n != 2 || !r.Has("page") {
+		t.Fatalf("open: %d specs", n)
+	}
+}

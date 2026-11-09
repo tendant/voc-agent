@@ -46,7 +46,18 @@ type Tool struct {
 	Description string
 	Schema      json.RawMessage
 	run         func(ctx context.Context, c Call, args json.RawMessage) (any, error)
+	// enabled, if set, hides the tool when it can't be used right now (e.g.
+	// page actions while no browser window is open), keeping prompts short.
+	enabled func() bool
 }
+
+// When returns a copy of t that is offered only while enabled reports true.
+func (t Tool) When(enabled func() bool) Tool {
+	t.enabled = enabled
+	return t
+}
+
+func (t *Tool) available() bool { return t.enabled == nil || t.enabled() }
 
 // Typed builds a tool from a function taking a struct of arguments. Struct
 // fields use `json:"name"` (",omitempty" makes it optional) and
@@ -155,10 +166,13 @@ type Registry struct {
 
 func NewRegistry(ts ...Tool) *Registry { return &Registry{tools: ts} }
 
+// Specs describes the tools available right now.
 func (r *Registry) Specs() []llm.Tool {
-	out := make([]llm.Tool, len(r.tools))
-	for i, t := range r.tools {
-		out[i] = llm.Tool{Type: "function", Function: llm.FunctionSpec{Name: t.Name, Description: t.Description, Parameters: t.Schema}}
+	out := make([]llm.Tool, 0, len(r.tools))
+	for i := range r.tools {
+		if t := &r.tools[i]; t.available() {
+			out = append(out, llm.Tool{Type: "function", Function: llm.FunctionSpec{Name: t.Name, Description: t.Description, Parameters: t.Schema}})
+		}
 	}
 	return out
 }
@@ -184,6 +198,8 @@ func (r *Registry) Run(ctx context.Context, c Call, name string, args json.RawMe
 	)
 	if t := r.find(name); t == nil {
 		err = fmt.Errorf("unknown tool %q", name)
+	} else if !t.available() {
+		err = fmt.Errorf("%s isn't available right now", name)
 	} else {
 		out, err = t.run(ctx, c, args)
 	}
@@ -207,8 +223,11 @@ func (r *Registry) Run(ctx context.Context, c Call, name string, args json.RawMe
 	return res
 }
 
-// Has reports whether a tool is registered.
-func (r *Registry) Has(name string) bool { return r.find(name) != nil }
+// Has reports whether a tool is registered and available right now.
+func (r *Registry) Has(name string) bool {
+	t := r.find(name)
+	return t != nil && t.available()
+}
 
 func (r *Registry) find(name string) *Tool {
 	for i := range r.tools {

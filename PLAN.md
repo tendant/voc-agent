@@ -296,8 +296,34 @@ Qwen3 wouldn't call `page_read` ("I can't see the page"), so questions about
 `list_reminders`. Live test (`VOC_LIVE=1 go test ./internal/agent -run
 LiveBrowse`, local page, headless): 4/4.
 
-Not done: a "back" action, typing into page fields, open-ended multi-step
-browsing.
+Follow-up, voice interaction with pages:
+- **New actions:** `page_nav` (back, forward, reload, scroll, top, bottom),
+  `page_type` (field by label, or the search box; password and payment fields
+  refused; Enter only when the user's words ask for it), and `page_result`
+  (the nth YouTube or Google result, or the nth main link).
+- **Instant commands:** about 18 exact phrases ("pause", "louder", "scroll
+  down", "go back", "search this site for X", chains like "go back, go back"
+  or "scroll down twice", polite forms like "can you…") skip the LLM:
+  0.15–0.3 s instead of about 1 s.
+- **Prompt size:** page tools are offered only while the browser window is
+  open.
+
+Bugs the live test found:
+- **Site search:** "search this site for X" triggered the page read, and
+  Qwen answered from the text instead of searching. It is now an instant
+  command.
+- **Submitting forms:** Qwen set `submit: true` for "type 94110 in the zip
+  code box", which would submit the form. Enter is now stripped unless the
+  user's words ask for it.
+- **Silence:** Qwen sometimes said nothing after a successful action; voc
+  now gives a confirmation built from the tool result.
+- **Copied replies:** Qwen copied the instant commands' terse replies ("Went
+  back.") without calling anything. Sentence-initial action reports are
+  claim-checked too.
+
+Live (`VOC_LIVE=1 go test ./internal/agent -run LiveBrowse`, local pages):
+2/2 suites pass. Not done: typing into rich editors, multi-step goals,
+choosing between tabs.
 
 ## WebSocket protocol
 

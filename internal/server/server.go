@@ -331,7 +331,7 @@ type heardUtterance struct {
 // While media plays in voc's browser, hands-free only accepts these, or
 // anything after "hey voc".
 var (
-	mediaCommandRe = regexp.MustCompile(`^(please )?(pause|stop|play|resume|continue|next|skip|mute|unmute|louder|quieter|volume (up|down)|turn (it )?(up|down)|go back|restart|start over|stop (the )?(video|music)|pause (the )?(video|music|it))\b`)
+	mediaCommandRe = regexp.MustCompile(`^(please )?(pause|stop|play|resume|continue|next|skip|mute|unmute|louder|quieter|softer|volume (up|down)|turn (it )?(up|down)|go back|go forward|back|forward|rewind|fast forward|restart|start over|stop (the )?(video|music)|pause (the )?(video|music|it)|scroll|page (up|down)|reload|refresh|(go to )?(the )?(top|bottom))\b`)
 	wakeRe         = regexp.MustCompile(`^(hey|hi|okay|ok) (voc|vok|vox|vauk|vac)\b[,.!]?\s*`)
 )
 

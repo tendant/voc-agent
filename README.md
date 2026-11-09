@@ -54,6 +54,17 @@ accounts), so voc can also act on them:
   answer from the page text, read by the local model.
 - "Click next page" clicks a link or button by its text. voc refuses buttons
   that buy, send, post, subscribe or delete.
+- "Search this site for tomato soup", "type 94110 in the zip code box"
+  (Enter is pressed only when you say search, submit or press enter; password
+  and payment fields are refused).
+- "Open the second result", "play the third video".
+- "Go back", "scroll down", "go to the top", "reload", also chained: "go
+  back, go back", "scroll down twice".
+
+Simple commands ("pause", "next", "louder", "scroll down", "go back"…) run
+instantly without the model (≈0.2 s), even phrased politely ("can you go back
+please"). Page actions are offered to the model only while voc's browser
+window is open.
 
 Page text is treated as untrusted. After voc reads a page, the tools that
 could carry data out (cloud, searches, links, playing) run only if your own

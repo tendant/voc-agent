@@ -16,7 +16,7 @@ import (
 
 func TestMediaGate(t *testing.T) {
 	for in, want := range map[string]bool{"Pause.": true, "pause the video": true, "Next.": true, "turn it down": true,
-		"louder": true, "and then he said we should go": false, "subscribe to my channel": false} {
+		"louder": true, "Scroll down.": true, "Go back.": true, "and then he said we should go": false, "subscribe to my channel": false} {
 		if got := mediaCommandRe.MatchString(normalize(in)); got != want {
 			t.Errorf("%q: %v", in, got)
 		}
