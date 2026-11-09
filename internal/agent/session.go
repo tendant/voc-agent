@@ -79,6 +79,47 @@ You cannot take actions (no reminders, notes, calendar, or internet). If asked, 
 
 const maxToolRounds = 4
 
+// Acknowledgement spoken when a turn reaches its first tool call with nothing
+// said yet, so tool turns (2-3 LLM rounds) don't sit silent for seconds. It is
+// not part of the reply text or history.
+const (
+	ackText     = "One moment."
+	ackSentinel = "\x00ack"
+)
+
+// guardFallback is said when the model never backs a required action.
+const guardFallback = "Sorry, I couldn't get that done just now, so nothing was changed. Please try asking again."
+
+// readOnlyTools take no arguments and have no side effects; when the user's
+// words require one, the agent runs it directly.
+var readOnlyTools = map[string]bool{"list_reminders": true}
+
+// Claims of actions that must be backed by a successful tool call this turn.
+// Checked on every sentence before it is spoken, so a false "I've set a
+// reminder" is never said even if intent detection missed (e.g. an ASR error).
+var claims = []struct {
+	re   *regexp.Regexp
+	tool string
+}{
+	{regexp.MustCompile(`(?i)\b(i'?ve|i have|i(?:'ll| will)|i've gone ahead and|i went ahead and)\s+(set|created|added|scheduled|made)\b[^.!?]*\breminders?\b|\breminders? (is|has been|was) (set|created|added|scheduled)\b|\bi(?:'ll| will) remind you\b`), "create_reminder"},
+	{regexp.MustCompile(`(?i)\b(i'?ve|i have)\s+(asked|sent|checked with|consulted|forwarded)\b[^.!?]*\b(cloud|claude)\b|\b(the cloud|claude) (says|said|suggests|recommends|answered)\b`), "ask_cloud"},
+}
+
+func unbackedClaim(sentence string, succeeded map[string]bool) string {
+	for _, c := range claims {
+		if !succeeded[c.tool] && c.re.MatchString(sentence) {
+			return c.tool
+		}
+	}
+	return ""
+}
+
+// Closing offers the prompt asks the model not to make; small models keep
+// adding them, and spoken aloud they get tiresome.
+var fillerRe = regexp.MustCompile(`(?i)^(let me know if|feel free to|is there anything else|if you (need|have) any(thing)? (else|more|other|further)|hope (this|that) helps)`)
+
+func isFiller(s string) bool { return fillerRe.MatchString(strings.TrimSpace(s)) }
+
 // Intents that make a tool call mandatory. Small local models sometimes
 // reply "I'll remind you" without calling the tool, or answer "what
 // reminders do I have" from stale conversation memory.
@@ -118,6 +159,10 @@ type Session struct {
 	Approver   func(ctx context.Context, turn uint32, sink Sink, req tools.ApprovalRequest) (bool, error)
 	MaxHistory int // messages kept, excluding the system prompt; default 20
 	Now        func() time.Time
+
+	ackOnce  sync.Once
+	ackAudio voice.Audio
+	ackErr   error
 
 	turnMu  sync.Mutex // one turn at a time
 	mu      sync.Mutex // guards history
@@ -212,7 +257,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 	if s.Recall != nil {
 		notes, err := s.Recall(ctx, user)
 		if err != nil {
-			sink.Event(Event{Type: "error", Turn: turn, Error: "recall: " + err.Error()})
+			if ctx.Err() == nil { // an interrupted turn is not an error
+				sink.Event(Event{Type: "error", Turn: turn, Error: "recall: " + err.Error()})
+			}
 		} else if len(notes) > 0 {
 			var b strings.Builder
 			b.WriteString("Notes from the user's files that may relate to their message. Use them only if relevant:\n")
@@ -237,27 +284,78 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 	)
 	go func() {
 		defer close(sentences)
+		emitted := false // anything queued for speech yet
 		emit := func(ss []string) {
 			for _, x := range ss {
+				emitted = true
 				select {
 				case sentences <- x:
 				case <-ctx.Done():
 				}
 			}
 		}
+		// say speaks model sentences that pass the claim check and shows them
+		// in the UI. It returns the tool a sentence falsely claims, if any;
+		// that sentence and the rest of the round are dropped.
+		succeeded := map[string]bool{} // tools that ran OK this turn
+		say := func(ss []string) (unbacked string) {
+			for _, x := range ss {
+				if isFiller(x) {
+					continue
+				}
+				if t := unbackedClaim(x, succeeded); t != "" {
+					return t
+				}
+				if spoken.Len() > 0 {
+					spoken.WriteString(" ")
+				}
+				spoken.WriteString(x)
+				sink.Event(Event{Type: "llm_delta", Turn: turn, Text: x + " "})
+				emit([]string{x})
+			}
+			return ""
+		}
+		fail := func(why string) {
+			sink.Event(Event{Type: "guard", Turn: turn, Text: why + "; giving up"})
+			say([]string{guardFallback})
+		}
+
 		call := tools.Call{TurnKey: newTurnKey()}
 		if s.Approver != nil {
 			call.Approve = func(ctx context.Context, req tools.ApprovalRequest) (bool, error) {
 				return s.Approver(ctx, turn, sink, req)
 			}
 		}
+		called := map[string]bool{}
+		runTool := func(tc llm.ToolCall) tools.Result {
+			called[tc.Function.Name] = true
+			sink.Event(Event{Type: "tool_call", Turn: turn, Name: tc.Function.Name, Args: tc.Function.Arguments})
+			res := s.Tools.Run(ctx, call, tc.Function.Name, tc.Function.Arguments)
+			toolMS += res.MS
+			if res.OK {
+				succeeded[tc.Function.Name] = true
+			}
+			ok := res.OK
+			sink.Event(Event{Type: "tool_result", Turn: turn, Name: tc.Function.Name, Result: res.JSON, OK: &ok, MS: map[string]int{"ms": res.MS}})
+			msgs = append(msgs, llm.Message{Role: "tool", ToolName: tc.Function.Name, Content: string(res.JSON)})
+			return res
+		}
+
 		var required []string
 		for _, r := range requiredTools(user) {
-			if s.Tools != nil && s.Tools.Has(r) { // e.g. ask_cloud only when cloud is enabled
-				required = append(required, r)
+			if s.Tools == nil || !s.Tools.Has(r) { // e.g. ask_cloud only when cloud is enabled
+				continue
 			}
+			if readOnlyTools[r] {
+				// No arguments to decide: run it now instead of hoping the
+				// model will, and let the model phrase the answer.
+				tc := llm.ToolCall{Function: llm.FunctionCall{Name: r, Arguments: json.RawMessage(`{}`)}}
+				msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{tc}})
+				runTool(tc)
+				continue
+			}
+			required = append(required, r)
 		}
-		called := map[string]bool{}
 		unmet := func() []string {
 			var out []string
 			for _, r := range required {
@@ -267,78 +365,92 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			}
 			return out
 		}
+
 		for round := 0; ; round++ {
+			if ctx.Err() != nil {
+				llmErr = ctx.Err()
+				break
+			}
 			req := llm.Request{Messages: msgs}
 			if s.Tools != nil && round < maxToolRounds {
 				req.Tools = s.Tools.Specs()
 			}
 			// While a required action is outstanding, hold this round's text
-			// until we know it came with a tool call; otherwise a claim like
-			// "I've set a reminder" could be spoken before it is true.
+			// until we know it came with a tool call.
 			hold := len(unmet()) > 0 && req.Tools != nil
 			var held []string
-			say := func(d string) {
-				spoken.WriteString(d)
-				sink.Event(Event{Type: "llm_delta", Turn: turn, Text: d})
-			}
+			var blocked string // tool falsely claimed by this round's text
 			ch := &Chunker{MinLen: 12}
-			if spoken.Len() > 0 && round > 0 {
-				spoken.WriteString(" ")
-			}
 			reply, err := s.LLM.Chat(ctx, req, func(d string) {
 				if llmTTFT < 0 {
 					llmTTFT = ms()
 				}
-				if hold {
-					held = append(held, d)
+				if blocked != "" {
 					return
 				}
-				say(d)
-				emit(ch.Push(d))
-			})
-			if hold && (len(reply.ToolCalls) > 0 || err != nil) {
-				// Text that accompanies a tool call is safe to say.
-				for _, d := range held {
-					say(d)
-					emit(ch.Push(d))
+				ss := ch.Push(d)
+				if hold {
+					held = append(held, ss...)
+					return
 				}
-				held = nil
+				blocked = say(ss)
+			})
+			rest := ch.Flush()
+			if hold {
+				held = append(held, rest...)
+			} else if blocked == "" {
+				blocked = say(rest)
 			}
-			emit(ch.Flush()) // speak "Let me check." while the tool runs
 			if err != nil {
 				llmErr = err
 				break
 			}
+
 			if len(reply.ToolCalls) == 0 {
-				if missing := unmet(); hold && len(missing) > 0 && round+1 < maxToolRounds {
-					// Discard the unbacked reply and insist on the tool call.
+				if missing := unmet(); hold && len(missing) > 0 {
+					if round+1 >= maxToolRounds {
+						fail("required " + strings.Join(missing, ", ") + " never called")
+						break
+					}
 					msgs = append(msgs, llm.Message{Role: "assistant", Content: reply.Content},
-						llm.Message{Role: "system", Content: "You have not called " + strings.Join(missing, ", ") +
-							" yet, so it has not happened. Call it now. Do not reply in text first."})
+						llm.Message{Role: "user", Content: "(Note from the system, not the user: you have not called " + strings.Join(missing, ", ") +
+							" yet, so it has not happened. Call it now. Do not reply in text first.)"})
 					sink.Event(Event{Type: "guard", Turn: turn, Text: "required " + strings.Join(missing, ", ") + "; retrying"})
 					continue
 				}
-				for _, d := range held { // guard gave up or nothing required
-					say(d)
-					emit(ch.Push(d))
+				if blocked == "" && hold {
+					blocked = say(held)
 				}
-				emit(ch.Flush())
+				if blocked != "" {
+					if round+1 >= maxToolRounds {
+						fail("claimed " + blocked + " without calling it")
+						break
+					}
+					msgs = append(msgs, llm.Message{Role: "assistant", Content: reply.Content},
+						llm.Message{Role: "user", Content: "(Note from the system, not the user: you said you used " + blocked +
+							" but you did not call it, so it did not happen. Call " + blocked + " now if the user asked for it; otherwise tell the user plainly that you have not done it.)"})
+					sink.Event(Event{Type: "guard", Turn: turn, Text: "unbacked claim of " + blocked + "; retrying"})
+					continue
+				}
 				break
 			}
+
+			// The round came with tool calls: text that accompanied them is
+			// safe to say ("Let me check."), except claims not yet backed.
+			if hold {
+				say(held)
+			}
 			msgs = append(msgs, reply)
+			if !emitted && needsAck(reply.ToolCalls) {
+				sink.Event(Event{Type: "ack", Turn: turn, Text: ackText})
+				emit([]string{ackSentinel})
+			}
 			var verbatim string
 			for _, tc := range reply.ToolCalls {
 				if ctx.Err() != nil {
 					break
 				}
-				called[tc.Function.Name] = true
-				sink.Event(Event{Type: "tool_call", Turn: turn, Name: tc.Function.Name, Args: tc.Function.Arguments})
-				res := s.Tools.Run(ctx, call, tc.Function.Name, tc.Function.Arguments)
-				toolMS += res.MS
-				ok := res.OK
-				sink.Event(Event{Type: "tool_result", Turn: turn, Name: tc.Function.Name, Result: res.JSON, OK: &ok, MS: map[string]int{"ms": res.MS}})
-				msgs = append(msgs, llm.Message{Role: "tool", ToolName: tc.Function.Name, Content: string(res.JSON)})
-				if res.Say != "" {
+				if res := runTool(tc); res.Say != "" {
 					verbatim = res.Say
 				}
 			}
@@ -349,14 +461,9 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 			if verbatim != "" {
 				// The tool's answer is the reply (e.g. from the cloud): speak it
 				// verbatim instead of having the local model paraphrase it.
-				if spoken.Len() > 0 {
-					spoken.WriteString(" ")
-				}
-				spoken.WriteString(verbatim)
-				sink.Event(Event{Type: "llm_delta", Turn: turn, Text: verbatim})
-				ch := &Chunker{MinLen: 12}
-				emit(ch.Push(verbatim))
-				emit(ch.Flush())
+				succeeded["ask_cloud"] = true
+				vc := &Chunker{MinLen: 12}
+				say(append(vc.Push(verbatim), vc.Flush()...))
 				break
 			}
 		}
@@ -368,7 +475,13 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 		if ctx.Err() != nil || ttsErr != nil {
 			continue // drain so the producer can finish
 		}
-		a, err := s.TTS.Synthesize(sent)
+		var a voice.Audio
+		var err error
+		if sent == ackSentinel {
+			a, err = s.ack()
+		} else {
+			a, err = s.TTS.Synthesize(sent)
+		}
 		if err != nil {
 			ttsErr = fmt.Errorf("tts: %w", err)
 			continue
@@ -414,4 +527,21 @@ func (s *Session) Turn(ctx context.Context, turn uint32, user string, start time
 	default:
 		return ttsErr
 	}
+}
+
+// needsAck reports whether a tool round deserves a spoken acknowledgement.
+// ask_cloud speaks its own approval prompt.
+func needsAck(calls []llm.ToolCall) bool {
+	for _, c := range calls {
+		if c.Function.Name != "ask_cloud" {
+			return true
+		}
+	}
+	return false
+}
+
+// ack returns the cached acknowledgement audio, synthesizing it once.
+func (s *Session) ack() (voice.Audio, error) {
+	s.ackOnce.Do(func() { s.ackAudio, s.ackErr = s.TTS.Synthesize(ackText) })
+	return s.ackAudio, s.ackErr
 }

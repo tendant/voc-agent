@@ -25,6 +25,7 @@ func TestChunker(t *testing.T) {
 		{"markdown", []string{"**Tip:** drink `water`.\n- one\n- two\n"}, []string{"Tip: drink water.", "one", "two"}},
 		{"quote", []string{`He said "go now." Then left.`}, []string{`He said "go now."`, "Then left."}},
 		{"symbols only", []string{"---\n"}, nil},
+		{"underscores", []string{"Run the `0042_down` migration. __Done__."}, []string{"Run the 0042 down migration.", "Done."}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

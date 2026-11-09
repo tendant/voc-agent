@@ -187,7 +187,41 @@ As built (differs from the sketch below):
   with that note's content stripped, and the audit log shows exactly what was
   sent.
 
-### M4: Demo polish (~2–3h)
+### M4: Demo polish (~2–3h) — ✅ done 2026-11-08 (except the rehearsal with Wi-Fi off and a real microphone)
+
+`make offline-check` is the dress rehearsal. It starts a fresh server, speaks
+all seven demo lines with Piper (16 kHz, 20 ms frames, like the browser),
+answers approval prompts by voice, waits for the 1-minute reminder, and
+samples the server's sockets every 0.2 s. Final two runs: 7/7 lines correct,
+first audio mean 1.56 s and 1.70 s, worst 2.27 s and 2.51 s (target < 3 s),
+only loopback connections; the 1-minute reminder fired on time in each run
+that waited for it. Under heavy load from other processes (load average
+18–28) one run averaged 7 s, so close heavy apps before demoing. Still to do
+by a person: run DEMO.md with Wi-Fi off and a real microphone.
+
+What the rehearsal caught and fixed:
+- **False claim after an ASR error:** "Ask Claude" was heard as "Calaed",
+  so no intent matched, and the model said "I've asked the cloud" without
+  calling anything. Now every sentence is checked before it is spoken: a
+  claim of setting a reminder or asking the cloud is dropped unless that tool
+  succeeded this turn, and the model must act or say it hasn't. The demo
+  says "ask the cloud", which transcribes reliably.
+- **Guard gave up into a lie:** after three ignored nudges, the held
+  (unbacked) text was spoken. Now a fixed "couldn't do that, nothing was
+  changed" is said. Nudges are sent as user messages, which Qwen3 heeds more
+  than mid-conversation system messages, and argument-free reads
+  (`list_reminders`) are run directly.
+- **Voice approval:** "Approve." was heard as "Prove.", and "Cancel." as
+  "Council." or "Cencil.". Matching is asymmetric on purpose: "cancel"
+  matches fuzzily (a wrong cancel is harmless), while "approve" matches only
+  exact words and known mishearings ("improve" does not approve). An unclear
+  short reply re-prompts instead of cancelling; a longer utterance cancels and
+  becomes a new request.
+- **Polish:** "One moment." is spoken on silent tool rounds (tool turns used
+  to be silent for ~2–2.7 s). The filler "Let me know if you need anything
+  else" is removed in code. `0042_down` is spoken as "0042 down". The UI
+  shows text per spoken sentence, so a blocked claim never appears on screen.
+
 
 - Seed the demo notes, write a demo script, and add a README with setup steps.
 - `make offline-check` confirms no outbound connections when cloud mode is off.

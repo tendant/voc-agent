@@ -48,6 +48,11 @@ Notes are the Markdown/text files under `./notes` (sample notes included;
 point `-notes` at your own folder). They are re-indexed every 2 s. Reminders,
 tool calls, and conversation history live in `voc.db` (SQLite).
 
+## Demo
+
+See [DEMO.md](DEMO.md). `make offline-check` rehearses it by voice and checks
+that nothing but loopback is used; `make demo-reset` clears state between runs.
+
 ## Other targets
 
 - `make test` runs the Go tests, including a WebSocket round trip on a real recording.

@@ -19,20 +19,78 @@ type pendingApproval struct {
 }
 
 var (
-	yesRe = regexp.MustCompile(`^(yes|yeah|yep|approve[ds]?|approval|send( it)?|go ahead|ok(ay)?|sure|do it|confirm(ed)?)\b`)
-	noRe  = regexp.MustCompile(`^(no|nope|cancel(led)?|deny|denied|don'?t|do not|stop|never ?mind|reject(ed)?)\b`)
+	// Approving sends data, so it is matched strictly: exact words plus known
+	// ASR mishearings of an isolated "approve" ("Prove.", "A prove.").
+	yesRe = regexp.MustCompile(`^(yes|yeah|yep|approve[ds]?|aprove[ds]?|(a ?)?prove[ds]?|approval|send( it)?|go ahead|ok(ay)?|sure|do it|confirm(ed)?)\b`)
+	// Includes how ASR tends to mishear an isolated "cancel".
+	noRe = regexp.MustCompile(`^(no|nope|cancel(led|s)?|canceled|council|counsel|consul|cancer|deny|denied|don'?t|do not|stop|never ?mind|reject(ed)?)\b`)
 )
 
-// voiceDecision maps an utterance to approve (true) or deny (false).
+// voiceDecision maps an utterance to approve (true) or deny (false). ASR is
+// weakest on isolated words, so short replies are matched fuzzily, but only
+// toward "cancel": a misheard cancel is harmless, a misheard approve is not.
 func voiceDecision(text string) (approve, ok bool) {
 	t := strings.ToLower(strings.TrimSpace(strings.Trim(text, " .!?,")))
 	switch {
-	case yesRe.MatchString(t):
-		return true, true
+	case t == "":
+		return false, false
 	case noRe.MatchString(t):
 		return false, true
+	case yesRe.MatchString(t):
+		return true, true
+	}
+	words := strings.FieldsFunc(t, func(r rune) bool { return r == ' ' || r == ',' || r == '.' || r == '!' })
+	if len(words) > 3 {
+		return false, false
+	}
+	for _, w := range words {
+		if near(w, "cancel") || near(w, "deny") {
+			return false, true
+		}
 	}
 	return false, false
+}
+
+// isShortReply reports whether an undecided utterance during an approval is
+// probably a misheard answer rather than a new request.
+func isShortReply(text string) bool { return len(strings.Fields(text)) <= 3 }
+
+// near reports an edit distance of at most 2 (and not a tiny word).
+func near(a, b string) bool {
+	if len(a) < 3 {
+		return false
+	}
+	return editDistance(a, b) <= 2
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+// reprompt asks again when an answer to a pending approval wasn't understood.
+func (s *Server) reprompt(p *pendingApproval, sink agent.Sink) {
+	sink.Event(agent.Event{Type: "approval_reprompt", Turn: p.turn, Text: "Say approve or cancel."})
+	if s.TTS != nil {
+		if a, err := s.TTS.Synthesize("Sorry, I didn't catch that. Say approve, or cancel."); err == nil {
+			sink.Audio(p.turn, a)
+		}
+	}
 }
 
 // Approve implements agent.Session.Approver: it shows the request to the

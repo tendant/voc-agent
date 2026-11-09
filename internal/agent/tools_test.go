@@ -121,7 +121,7 @@ func TestGuardBlocksUnbackedClaim(t *testing.T) {
 	if strings.Contains(said.String(), "I've set") {
 		t.Fatalf("unbacked claim reached the user: %q", said.String())
 	}
-	if !guarded || len(r.audio) != 1 {
+	if !guarded || len(r.audio) != 2 || r.audio[0] != len(ackText) { // "One moment." then the backed reply
 		t.Fatalf("guarded=%v audio=%d said=%q", guarded, len(r.audio), said.String())
 	}
 	if rs, _ := st.PendingReminders(context.Background()); len(rs) != 1 {
@@ -129,7 +129,7 @@ func TestGuardBlocksUnbackedClaim(t *testing.T) {
 	}
 	// The system nudge went to the model on round 2.
 	m := f.reqs[1].Messages
-	if !strings.Contains(m[len(m)-1].Content, "You have not called create_reminder") {
+	if !strings.Contains(m[len(m)-1].Content, "you have not called create_reminder") {
 		t.Fatalf("no nudge: %+v", m[len(m)-1])
 	}
 }
@@ -191,5 +191,114 @@ func TestToolSayEndsTurnVerbatim(t *testing.T) {
 	done := r.events[len(r.events)-2]
 	if done.Type != "assistant_done" || done.Text != "Checking with the cloud. The cloud says: use a canary." {
 		t.Fatalf("done: %+v", done)
+	}
+}
+
+func TestAckOnSilentToolRound(t *testing.T) {
+	st, _ := store.Open(filepath.Join(t.TempDir(), "db"))
+	defer st.Close()
+	reg := tools.NewRegistry(tools.Personal(st, nil, nil)...)
+	run := func(first llm.Message) (*rec, []llm.Message) {
+		f := &scriptLLM{rounds: []llm.Message{first, {Role: "assistant", Content: "You have no reminders."}}}
+		s := &Session{LLM: f, TTS: fakeTTS{}, Tools: reg}
+		r := &rec{}
+		if err := s.Turn(context.Background(), 1, "list my reminders", time.Now(), r); err != nil {
+			t.Fatal(err)
+		}
+		return r, s.History()
+	}
+	// Silent tool round: ack is spoken first, but kept out of the reply.
+	r, h := run(llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{call("list_reminders", `{}`)}})
+	if len(r.audio) != 2 || r.audio[0] != len(ackText) {
+		t.Fatalf("audio %v: want ack then reply", r.audio)
+	}
+	if strings.Contains(h[1].Content, ackText) || r.events[len(r.events)-2].Text != "You have no reminders." {
+		t.Fatalf("ack leaked into reply/history: %+v", h)
+	}
+	// The model already spoke: no ack.
+	r, _ = run(llm.Message{Role: "assistant", Content: "Let me look that up.", ToolCalls: []llm.ToolCall{call("list_reminders", `{}`)}})
+	if len(r.audio) != 2 || r.audio[0] == len(ackText) {
+		t.Fatalf("unexpected ack: %v", r.audio)
+	}
+}
+
+func spokenText(r *rec) string {
+	var b strings.Builder
+	for _, e := range r.events {
+		if e.Type == "llm_delta" {
+			b.WriteString(e.Text)
+		}
+	}
+	return b.String()
+}
+
+// TestClaimBlockedWithoutIntent: ASR garbled "ask Claude", so no intent
+// matched, and the model claims it asked the cloud. The claim is never said.
+func TestClaimBlockedWithoutIntent(t *testing.T) {
+	f := &scriptLLM{rounds: []llm.Message{
+		{Role: "assistant", Content: "Good question. I've asked the cloud to review your plan."},
+		{Role: "assistant", Content: "Sorry, I haven't sent anything to the cloud. Could you say that again?"},
+	}}
+	s := &Session{LLM: f, TTS: fakeTTS{}, Tools: tools.NewRegistry()}
+	r := &rec{}
+	s.Turn(context.Background(), 1, "Calaed to review my plan", time.Now(), r)
+	said := spokenText(r)
+	if strings.Contains(said, "I've asked the cloud") || !strings.Contains(said, "haven't sent anything") {
+		t.Fatalf("said %q", said)
+	}
+	if h := s.History(); strings.Contains(h[1].Content, "I've asked") {
+		t.Fatalf("claim in history: %q", h[1].Content)
+	}
+}
+
+func TestGuardGivesUpHonestly(t *testing.T) {
+	st, _ := store.Open(filepath.Join(t.TempDir(), "db"))
+	defer st.Close()
+	lie := llm.Message{Role: "assistant", Content: "Done, I've set a reminder for tomorrow."}
+	f := &scriptLLM{rounds: []llm.Message{lie, lie, lie, lie, lie}}
+	s := &Session{LLM: f, TTS: fakeTTS{}, Tools: tools.NewRegistry(tools.Personal(st, nil, nil)...)}
+	r := &rec{}
+	s.Turn(context.Background(), 1, "remind me to call mom tomorrow", time.Now(), r)
+	if said := spokenText(r); strings.Contains(said, "I've set") || !strings.Contains(said, guardFallback) {
+		t.Fatalf("said %q", said)
+	}
+}
+
+func TestFillerDroppedAndReadsRunDirectly(t *testing.T) {
+	st, _ := store.Open(filepath.Join(t.TempDir(), "db"))
+	defer st.Close()
+	st.CreateReminder(context.Background(), "k", "Water plants", time.Now().Add(time.Hour), "")
+	// The model never calls list_reminders itself.
+	f := &scriptLLM{rounds: []llm.Message{{Role: "assistant", Content: "You have one reminder: water the plants. Let me know if you need anything else!"}}}
+	s := &Session{LLM: f, TTS: fakeTTS{}, Tools: tools.NewRegistry(tools.Personal(st, nil, nil)...)}
+	r := &rec{}
+	s.Turn(context.Background(), 1, "What reminders do I have?", time.Now(), r)
+	if said := spokenText(r); strings.Contains(said, "Let me know") || !strings.Contains(said, "water the plants") {
+		t.Fatalf("said %q", said)
+	}
+	m := f.reqs[0].Messages
+	if last := m[len(m)-1]; last.Role != "tool" || !strings.Contains(last.Content, "Water plants") {
+		t.Fatalf("list_reminders not run before the model: %+v", last)
+	}
+}
+
+func TestClaimPatterns(t *testing.T) {
+	none := map[string]bool{}
+	for s, want := range map[string]string{
+		"I've set a reminder to review your notes tomorrow at nine.": "create_reminder",
+		"Your reminder is set for 9 AM.":                             "create_reminder",
+		"I'll remind you in two hours.":                              "create_reminder",
+		"I've asked the cloud to review your plan.":                  "ask_cloud",
+		"Claude says a canary is enough.":                            "ask_cloud",
+		"Should I set a reminder?":                                   "",
+		"You have one reminder tomorrow.":                            "",
+		"The cloud is not available right now.":                      "",
+	} {
+		if got := unbackedClaim(s, none); got != want {
+			t.Errorf("%q: %q want %q", s, got, want)
+		}
+	}
+	if unbackedClaim("I've set a reminder.", map[string]bool{"create_reminder": true}) != "" {
+		t.Error("backed claim blocked")
 	}
 }

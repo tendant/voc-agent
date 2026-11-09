@@ -21,7 +21,9 @@ import (
 
 func TestVoiceDecision(t *testing.T) {
 	for in, want := range map[string]int{"Approve.": 1, "yes, send it": 1, "Go ahead!": 1, "okay": 1,
-		"No.": 0, "cancel": 0, "don't send it": 0, "never mind": 0, "what is this": -1, "": -1} {
+		"Prove.": 1, "A prove.": 1, "approved": 1, "Aprove it": 1,
+		"No.": 0, "cancel": 0, "Cancer.": 0, "Council.": 0, "Cencil.": 0, "improve": -1, "don't send it": 0, "never mind": 0,
+		"what is this": -1, "": -1, "tell me about the weather today": -1, "a": -1} {
 		ok, decided := voiceDecision(in)
 		got := -1
 		if decided {

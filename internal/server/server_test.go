@@ -154,7 +154,8 @@ func TestInterrupt(t *testing.T) {
 	c := dial(t, srv)
 
 	c.send(`{"type":"text","text":"one two three four five six seven eight nine ten"}`)
-	c.until("llm_delta", 1)
+	c.until("turn_start", 1)
+	time.Sleep(100 * time.Millisecond) // mid-generation (40 ms per word, 12 words)
 	c.send(`{"type":"text","text":"stop"}`)
 	evs, _ := c.until("assistant_done", 2)
 	first := find(evs, "assistant_done")

@@ -68,9 +68,11 @@ func isBoundary(s string, i int) bool {
 
 var (
 	mdLink   = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
-	mdMarks  = regexp.MustCompile("[*_`#>|~]+")
+	mdMarks  = regexp.MustCompile("[*`#>|~]+")
+	under    = regexp.MustCompile(`_+`) // "0042_down" → "0042 down", "__bold__" → " bold "
 	listMark = regexp.MustCompile(`(?m)^\s*(?:[-•]|\d+[.)])\s+`)
 	spaces   = regexp.MustCompile(`\s+`)
+	prePunct = regexp.MustCompile(`\s+([.,!?;:])`)
 )
 
 // Speakable strips markdown and other symbols TTS would read out literally.
@@ -78,7 +80,9 @@ func Speakable(s string) string {
 	s = mdLink.ReplaceAllString(s, "$1")
 	s = listMark.ReplaceAllString(s, "")
 	s = mdMarks.ReplaceAllString(s, "")
+	s = under.ReplaceAllString(s, " ")
 	s = spaces.ReplaceAllString(s, " ")
+	s = prePunct.ReplaceAllString(s, "$1")
 	s = strings.TrimSpace(s)
 	// Nothing worth saying if there are no letters or digits.
 	for _, r := range s {

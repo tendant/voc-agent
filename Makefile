@@ -1,4 +1,4 @@
-.PHONY: dev server web build models test spike clean
+.PHONY: dev server web build models test spike clean offline-check rehearse demo-reset
 
 models:            ## download speech models into ./models
 	./scripts/fetch-models.sh
@@ -24,6 +24,15 @@ test:
 
 spike:             ## sherpa-onnx TTS→VAD→ASR round trip with timings
 	go run ./cmd/voicespike
+
+offline-check: models   ## dress rehearsal by voice + proof that only loopback is used
+	./scripts/offline-check.sh
+
+rehearse:          ## run the demo script by voice against a running server (make dev)
+	go run ./cmd/rehearse -url ws://127.0.0.1:8080/ws
+
+demo-reset:        ## forget conversation, reminders and audit log (keeps notes)
+	rm -f voc.db voc.db-wal voc.db-shm
 
 clean:
 	rm -rf bin web/dist

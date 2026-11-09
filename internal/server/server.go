@@ -176,7 +176,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				s.resolve(p.id, ok)
 				return true
 			}
-			s.resolve(p.id, false)
+			if isShortReply(text) {
+				s.reprompt(p, sink) // probably misheard; keep waiting
+				return true
+			}
+			s.resolve(p.id, false) // a new request replaces the pending one
 			return false
 		}
 		switch m.Type {
